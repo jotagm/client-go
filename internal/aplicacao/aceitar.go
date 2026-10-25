@@ -78,7 +78,7 @@ func NovoServico(repo porta.Repositorio, publicador porta.Publicador, log *slog.
 // o banco não tem os valores das variáveis (o código do OTP), então um outbox não teria
 // o que publicar. Ver docs/adr/0002.
 func (s *Servico) Aceitar(ctx context.Context, p Pedido) (notificacao.Notificacao, bool, error) {
-	agora := s.agora().UTC()
+	agora := agoraMicro(s.agora())
 	if err := validar(p, agora); err != nil {
 		return notificacao.Notificacao{}, false, err
 	}
@@ -93,6 +93,9 @@ func (s *Servico) Aceitar(ctx context.Context, p Pedido) (notificacao.Notificaca
 	}
 
 	if err := validarParaTemplate(p, tpl); err != nil {
+		return notificacao.Notificacao{}, false, err
+	}
+	if err := ensaiarRenderizacao(p, tpl, agora); err != nil {
 		return notificacao.Notificacao{}, false, err
 	}
 
@@ -141,21 +144,23 @@ func (s *Servico) Aceitar(ctx context.Context, p Pedido) (notificacao.Notificaca
 	}
 
 	if n.Estado != notificacao.EstadoAceita {
-		s.log.Info("notificação suprimida", "id", n.ID, "origem", n.Origem, "motivo", n.Motivo)
+		registrarEstado(s.log.With("id", n.ID), "", n.Estado, n.Motivo, "origem", n.Origem)
 		return n, true, nil
 	}
 
 	if err := s.publicador.Publicar(ctx, n); err != nil {
 		s.log.Error("falha ao publicar", "id", n.ID, "erro", err)
 		if errMudar := s.repo.MudarEstado(ctx, n.ID, notificacao.EstadoAceita,
-			notificacao.EstadoFalhou, "publicacao", s.agora().UTC()); errMudar != nil {
+			notificacao.EstadoFalhou, "publicacao", agoraMicro(s.agora())); errMudar != nil {
 			s.log.Error("falha ao marcar como falhou", "id", n.ID, "erro", errMudar)
+		} else {
+			registrarEstado(s.log.With("id", n.ID), notificacao.EstadoAceita, notificacao.EstadoFalhou, "publicacao")
 		}
 		return notificacao.Notificacao{}, false, ErrPublicacao
 	}
 
-	s.log.Info("notificação aceita", "id", n.ID, "origem", n.Origem, "template",
-		nomeComVersao(n.Template, n.VersaoTemplate), "prioridade", n.Prioridade)
+	registrarEstado(s.log.With("id", n.ID), "", n.Estado, "", "origem", n.Origem, "template",
+		nomeComVersao(n.Template, n.VersaoTemplate), "prioridade", string(n.Prioridade))
 	n.Variaveis = nil // daqui para fora ninguém precisa dos valores
 	return n, true, nil
 }
@@ -236,6 +241,29 @@ func validarParaTemplate(p Pedido, tpl notificacao.Template) error {
 	return nil
 }
 
+// ensaiarRenderizacao renderiza o template com os dados do pedido e joga o texto fora.
+// Serve para recusar já no aceite (422) o que nunca viraria e-mail: código vazio, template
+// que depende de expira_em sem expira_em. Sem isso, o erro só apareceria na fila, depois
+// de o chamador ter recebido 202 e seguido em frente.
+func ensaiarRenderizacao(p Pedido, tpl notificacao.Template, agora time.Time) error {
+	_, err := tpl.Renderizar(p.Variaveis, p.ExpiraEm, agora)
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, notificacao.ErrDadosInvalidos):
+		campo := "variaveis"
+		if strings.Contains(err.Error(), "expira") {
+			campo = "expira_em"
+		}
+		// só nomes de variáveis na mensagem, nunca valores (ver notificacao.Renderizar)
+		return &ErrValidacao{Campos: map[string]string{
+			campo: strings.TrimPrefix(err.Error(), notificacao.ErrDadosInvalidos.Error()+": ")}}
+	default:
+		// template quebrado: problema nosso, não de quem pediu
+		return fmt.Errorf("template %s: %w", nomeComVersao(tpl.Nome, tpl.Versao), err)
+	}
+}
+
 // emailValido aceita só o endereço puro: "Jota <a@b.com>" é recusado, porque o nome
 // de exibição viraria conteúdo controlado por quem chama dentro do cabeçalho do e-mail.
 func emailValido(s string) bool {
@@ -274,6 +302,6 @@ func utc(t *time.Time) *time.Time {
 	if t == nil {
 		return nil
 	}
-	u := t.UTC()
+	u := agoraMicro(*t)
 	return &u
 }

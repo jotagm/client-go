@@ -108,9 +108,10 @@ func (p *Processador) encerrar(ctx context.Context, log *slog.Logger, n notifica
 		log.Error("transição inválida", "erro", err)
 		return confirmar()
 	}
-	err := p.repo.MudarEstado(ctx, n.ID, n.Estado, para, motivo, p.agora().UTC())
+	err := p.repo.MudarEstado(ctx, n.ID, n.Estado, para, motivo, agoraMicro(p.agora()))
 	switch {
 	case err == nil:
+		registrarEstado(log, n.Estado, para, motivo)
 	case errors.Is(err, porta.ErrConcorrencia):
 		log.Warn("outro processo mudou o estado antes", "para", para)
 	default:

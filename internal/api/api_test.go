@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -25,7 +26,8 @@ func novoServidor(t *testing.T) (*httptest.Server, *bytes.Buffer) {
 	t.Helper()
 	repo := memoria.NovoRepositorio()
 	repo.AdicionarTemplate(notificacao.Template{
-		Nome: "otp-login", Versao: 1, Canal: notificacao.CanalEmail, Variaveis: []string{"codigo"},
+		Nome: "otp-login", Versao: 1, Canal: notificacao.CanalEmail,
+		Assunto: "Seu código", Corpo: "Código {{.codigo}}, vale {{.minutos}} min.", Variaveis: []string{"codigo"},
 	})
 	logs := &bytes.Buffer{}
 	log := slog.New(slog.NewTextHandler(logs, nil))
@@ -183,6 +185,46 @@ func TestLerTokens(t *testing.T) {
 		"booklit=" + longo + ",uptime=" + longo} {
 		if _, err := LerTokens(ruim); err == nil {
 			t.Errorf("LerTokens(%q) deveria falhar", ruim)
+		}
+	}
+}
+
+// repoComoPostgres guarda horários com precisão de microssegundos, como o Postgres faz.
+// Sem isso o teste não enxerga o defeito achado no lab: a primeira resposta (em memória,
+// com nanossegundos) e a repetição (lida do banco) mostravam horários diferentes.
+type repoComoPostgres struct{ *memoria.Repositorio }
+
+func (r repoComoPostgres) Criar(ctx context.Context, n notificacao.Notificacao) (notificacao.Notificacao, bool, error) {
+	n.CriadoEm = n.CriadoEm.Truncate(time.Microsecond)
+	n.AtualizadoEm = n.AtualizadoEm.Truncate(time.Microsecond)
+	if n.ExpiraEm != nil {
+		t := n.ExpiraEm.Truncate(time.Microsecond)
+		n.ExpiraEm = &t
+	}
+	return r.Repositorio.Criar(ctx, n)
+}
+
+func TestRepeticaoTemOsMesmosHorarios(t *testing.T) {
+	repo := memoria.NovoRepositorio()
+	repo.AdicionarTemplate(notificacao.Template{
+		Nome: "otp-login", Versao: 1, Canal: notificacao.CanalEmail,
+		Assunto: "Seu código", Corpo: "Código {{.codigo}}, vale {{.minutos}} min.", Variaveis: []string{"codigo"},
+	})
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := httptest.NewServer(Rotas(
+		aplicacao.NovoServico(repoComoPostgres{repo}, memoria.NovoPublicador(), log),
+		Tokens{tokenBooklit: "booklit"}, log))
+	t.Cleanup(srv.Close)
+
+	// expira_em com nanossegundos: o cliente pode mandar o que quiser
+	expira := time.Now().Add(10 * time.Minute).UTC().Format("2006-01-02T15:04:05.123456789Z")
+	corpo := `{"template":"otp-login","destinatario":"jota@exemplo.com","variaveis":{"codigo":"482913"},"expira_em":"` + expira + `"}`
+
+	_, primeira := requisitar(t, "POST", srv.URL+"/notificacoes", tokenBooklit, "desafio-1", corpo)
+	_, segunda := requisitar(t, "POST", srv.URL+"/notificacoes", tokenBooklit, "desafio-1", corpo)
+	for _, campo := range []string{"criado_em", "atualizado_em", "expira_em"} {
+		if primeira[campo] == nil || primeira[campo] != segunda[campo] {
+			t.Errorf("%s: primeira resposta %v, repetição %v", campo, primeira[campo], segunda[campo])
 		}
 	}
 }

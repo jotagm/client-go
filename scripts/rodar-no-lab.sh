@@ -2,7 +2,7 @@
 # Roda no WSL: copia o projeto para o lab, executa a validação no Floci de lá e traz o
 # relatório de volta para a pasta do projeto (onde o Claude consegue ler).
 #
-#   bash /mnt/d/Projetos/aviso/scripts/rodar-no-lab.sh
+#   bash /mnt/d/Projetos/Client_GO/scripts/rodar-no-lab.sh
 #
 # Variáveis opcionais:
 #   LAB      alias ou host do SSH (padrão: lab)
@@ -29,9 +29,10 @@ set +e
 ssh "${SSH_OPCOES[@]}" "$LAB" "cd ~/'$DESTINO' && bash scripts/validar-floci.sh" | grep -E '^(===|OK|FALHA|TUDO|[0-9]+ verifica)'
 set -e
 
-echo "→ trazendo o relatório e o go.sum"
+echo "→ trazendo o relatório, o go.mod e o go.sum"
 scp -q "${SSH_OPCOES[@]}" "$LAB:~/$DESTINO/relatorio-floci.txt" "$RAIZ/relatorio-floci.txt"
-# o go.sum foi gerado no lab com a verificação do sum.golang.org; traz para o projeto
+# o go mod tidy do lab confere tudo com o sum.golang.org; traz o resultado para o projeto
 scp -q "${SSH_OPCOES[@]}" "$LAB:~/$DESTINO/go.sum" "$RAIZ/go.sum" 2>/dev/null || echo "(go.sum não foi gerado)"
+scp -q "${SSH_OPCOES[@]}" "$LAB:~/$DESTINO/go.mod" "$RAIZ/go.mod" 2>/dev/null || echo "(go.mod não foi trazido)"
 
 echo "pronto: $RAIZ/relatorio-floci.txt"

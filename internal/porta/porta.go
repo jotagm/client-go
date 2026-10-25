@@ -58,8 +58,8 @@ type Consumidor interface {
 
 // Entregador é o passo de entrega visto pelo consumidor: recebe a notificação (do banco)
 // e as variáveis (do envelope) e devolve nil, ErrTemporario ou ErrPermanente.
-// Na fase 3 a implementação real renderiza o template e chama o Provedor; até lá existe
-// só a entrega simulada.
+// A implementação real (aplicacao.EntregadorEmail) renderiza o template, chama o Provedor
+// e registra a tentativa; a simulada só loga.
 type Entregador interface {
 	Entregar(ctx context.Context, n notificacao.Notificacao, variaveis map[string]string) error
 }
@@ -80,6 +80,55 @@ type Envio struct {
 type Resultado struct {
 	IDNoProvedor string // usado para casar o webhook de recibo
 	Latencia     time.Duration
+}
+
+// ErroProvedor é o erro que um Provedor devolve: diz se vale tentar de novo (Classe) e
+// carrega o que a tabela de tentativas guarda. O texto de Detalhe nunca pode conter o
+// corpo do e-mail nem valores de variáveis; quem registra ainda faz uma limpeza extra.
+type ErroProvedor struct {
+	Classe     error  // ErrTemporario ou ErrPermanente
+	Motivo     string // curto e estável, vai para o painel: "throttling", "mensagem_rejeitada"...
+	StatusHTTP int    // 0 quando não houve resposta HTTP (timeout, conexão recusada)
+	Detalhe    string
+}
+
+func (e *ErroProvedor) Error() string {
+	if e.Detalhe == "" {
+		return e.Classe.Error() + ": " + e.Motivo
+	}
+	return e.Classe.Error() + ": " + e.Motivo + ": " + e.Detalhe
+}
+
+func (e *ErroProvedor) Unwrap() error { return e.Classe }
+
+// Resultado de uma tentativa, como fica em t_tentativa_envio.
+const (
+	ResultadoSucesso    = "sucesso"
+	ResultadoTemporario = "temporario"
+	ResultadoPermanente = "permanente"
+)
+
+// Tentativa é uma linha de t_tentativa_envio: só inserção, uma por chamada ao provedor.
+// É daqui que sai a latência por provedor. O número da tentativa é atribuído pelo
+// repositório (a próxima da notificação), não por quem registra.
+type Tentativa struct {
+	NotificacaoID string
+	Numero        int // preenchido na leitura
+	Provedor      string
+	IDNoProvedor  string
+	StatusHTTP    int
+	Resultado     string
+	Motivo        string
+	Resposta      string // texto curto do erro, sem valores de variáveis
+	Latencia      time.Duration
+	TentadoEm     time.Time
+}
+
+// RegistroTentativas guarda o histórico de envios de cada notificação.
+type RegistroTentativas interface {
+	RegistrarTentativa(ctx context.Context, t Tentativa) error
+	// Tentativas devolve em ordem de número.
+	Tentativas(ctx context.Context, notificacaoID string) ([]Tentativa, error)
 }
 
 // Classificação do erro do provedor. Decide se tenta de novo.

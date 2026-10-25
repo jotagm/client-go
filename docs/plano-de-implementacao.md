@@ -18,7 +18,8 @@ substituindo o SES do Booklit). As fases 6 a 8 são evolução.
 - [x] Portas: `Publicador`, `Consumidor`, `Provedor`
 - [x] Esquema inicial (`db/001_inicial.sql`) e `docker-compose` do Postgres
 - [x] ADR 0001 (transporte) e ADR 0002 (código de OTP na fila, em aberto)
-- [ ] `git init` e repositório `jotagm/client-go` no GitHub
+- [x] `git init` (feito por você em 25/out)
+- [ ] Repositório `jotagm/client-go` no GitHub, se ainda não existir
 
 ---
 
@@ -87,29 +88,70 @@ consumindo 4 pedidos de ponta a ponta.
 
 ---
 
-## Fase 3: Entrega (provedor SES)
+## Fase 3: Entrega (provedor SES) ✅
 
 **Meta:** o consumidor renderiza e envia de fato, registrando cada tentativa.
 
-**Achados do teste manual no lab (25/out), corrigir aqui:**
-- [ ] Toda mudança de estado gera uma linha de log com estado e motivo. Hoje o caminho de
-      expiração não loga nada: dois códigos vencidos foram descartados sem nenhuma linha no log.
-- [ ] Truncar os horários para microssegundos antes de gravar. A primeira resposta do `POST`
-      mostra nanossegundos e a repetição (lida do Postgres) mostra microssegundos, para o mesmo campo.
+**Achados do teste manual no lab (25/out), corrigidos:**
+- [x] Toda mudança de estado gera uma linha de log `estado alterado` com `de`, `para` e `motivo`
+      (aceitar, suprimir, falhar na publicação, enviar, expirar...). Antes, dois códigos vencidos
+      foram descartados sem nenhuma linha. Teste: `TestProcessarLogaCadaMudancaDeEstado`.
+- [x] Horários truncados para microssegundos antes de gravar (`agoraMicro`), inclusive o `expira_em`
+      que o cliente manda. Antes, a primeira resposta do `POST` mostrava nanossegundos e a repetição,
+      lida do Postgres, microssegundos. Teste: `TestRepeticaoTemOsMesmosHorarios`, com um repositório
+      que arredonda como o Postgres (sem a correção, ele falha).
 
-- [ ] Renderização com `text/template` e `missingkey=error`
-- [ ] Testes de renderização com golden files, incluindo o caso de campo vazio
-- [ ] Provedor SES v2 (`aws-sdk-go-v2/service/sesv2`)
-- [ ] Classificação de erro: throttling e 5xx como `ErrTemporario`; destinatário inválido e
-      mensagem rejeitada como `ErrPermanente`
-- [ ] Antes de enviar: checar `Expirou()` e marcar `expirada` em vez de mandar código vencido
-- [ ] Registro de cada tentativa em `t_tentativa_envio`, com latência e motivo
-- [ ] Transição de estado validada por `PodeIrPara` em toda atualização
-- [ ] Provedor falso com `httptest` para os testes: lento, fora do ar, resposta malformada e
-      200 sem entrega
+**Entrega:**
+- [x] Renderização com `text/template` e `missingkey=error` (`notificacao.Template.Renderizar`)
+  - [x] `minutos` calculado a partir de `expira_em`, arredondado para cima; reservado (não pode vir no pedido)
+  - [x] Valor vazio é erro, não e-mail com o código em branco
+  - [x] Assunto com quebra de linha é recusado (injeção de cabeçalho)
+  - [x] O aceite ensaia a renderização: o que nunca viraria e-mail volta `422` na hora, em vez de
+        falhar na fila depois do `202`. Template quebrado é erro nosso (`500`), não do chamador
+- [x] Golden files em `internal/notificacao/testdata/`, lendo os textos de `db/002_templates_otp.sql`
+      (se o SQL mudar, o golden acusa; `go test ./internal/notificacao -atualizar` reescreve)
+- [x] Provedor SES v2 (`internal/adapter/ses`), com o retryer do SDK desligado: a retentativa é da
+      fila, com backoff e limite próprios, e cada chamada ao SES vira uma linha em `t_tentativa_envio`
+- [x] Classificação de erro (`ses.Classificar`): throttling (`429`, `ThrottlingException`, inclusive
+      quando vem como `400`), `5xx`, timeout, rede e resposta ilegível são `ErrTemporario`;
+      `MessageRejected`, `BadRequest`, domínio não verificado, conta suspensa e `4xx` sem tipo são
+      `ErrPermanente`. O status HTTP vem antes do erro de desserialização: um `503` de balanceador com
+      corpo HTML também falha ao ser lido como JSON, e o que importa é o `503`
+- [x] Antes de enviar, `Expirou()` marca `expirada` (feito na fase 2, coberto de novo pelo pipeline)
+- [x] Registro de cada tentativa em `t_tentativa_envio`: provedor, status HTTP, resultado, motivo,
+      latência, id no provedor. Número atribuído pelo repositório; índice único
+      (`db/003_tentativa_numero_unico.sql`) + nova tentativa se dois workers disputarem o mesmo número
+- [x] Transição validada por `PodeIrPara` em toda atualização: no Processador **e** dentro dos dois
+      repositórios (`MudarEstado` devolve `ErrTransicaoInvalida`)
+- [x] Provedor falso com `httptest` (`internal/adapter/ses`): lento, fora do ar, resposta malformada,
+      `200` sem `MessageId` e `200` sem entrega, mais cada erro tipado do SES
+- [x] Pipeline completo sem AWS (Processador + EntregadorEmail + SES + servidor falso): o `200` sem
+      entrega fica em `enviada`, nunca `entregue`; falhas temporárias voltam para a fila com a
+      tentativa registrada; rejeição vira `falhou/erro_permanente`
+- [x] Segredo: o código não vai para log, para `t_tentativa_envio` nem para o erro que sobe. Se o
+      provedor repetir o corpo do e-mail na mensagem de erro, `ocultar()` troca o valor por `[omitido]`
+- [x] `AVISO_PROVEDOR=simulado|ses`, `AVISO_SES_REMETENTE` (obrigatório com `ses`), `AVISO_SES_CONJUNTO`
+
+**Validação:** `scripts/validar-floci.sh` ganhou a seção 7 (instância com `AVISO_PROVEDOR=ses`): três
+pedidos chegam a `enviada`, `t_tentativa_envio` tem uma linha de sucesso por pedido e o e-mail aparece no
+emulador com o código e a validade renderizados. Passou no moto e no Floci do lab (25/out, "TUDO OK").
+
+**Achados do teste de integração (moto, 25/out):**
+- O SES recusa remetente não verificado com `MessageRejected` (permanente). Em produção isso vira
+  tarefa da fase 5: identidade de domínio, DKIM e saída do sandbox.
+- **Deploy e long polling:** ao desligar a instância, o `ReceiveMessage` em andamento é cancelado, mas o
+  servidor pode já ter entregado uma mensagem àquela chamada. Ela fica invisível até o
+  `visibility_timeout` (30 s) e só então volta. Medido: a mensagem esperou exatamente 30,0 s e foi
+  entregue uma vez só. É o "pelo menos uma vez" funcionando, e para um código de 10 minutos 30 s de
+  atraso no deploy é aceitável. Fica registrado para a fase 5 (deploy contínuo) e para a fase 7
+  (alerta de idade da mensagem mais antiga).
+- Floci: os e-mails enviados aparecem em `GET /_aws/ses` (confirmado no lab).
+- **Latência rápida:** o Floci local responde em menos de 1 ms, e `NULLIF(latencia_ms, 0)` gravava
+  `NULL` (a validação do lab contou 2 tentativas completas em vez de 3). A latência agora é arredondada
+  para cima; `NULL` quer dizer só "o provedor não foi chamado".
 
 **Pronto quando:** o e-mail aparece em `GET <floci>/_aws/ses`, e os testes com o provedor falso
-cobrem os quatro cenários.
+cobrem os quatro cenários. (Os dois: feitos.)
 
 ---
 
@@ -152,10 +194,16 @@ mesma fila, os dois disputam as mensagens e as votações encerradas se perdem. 
 - [ ] Banco do Client_GO: database separado no mesmo Postgres da EC2, com usuário próprio
 - [ ] Role do Client_GO com `ses:SendEmail`, `sns:Publish` no próprio tópico e permissões SQS nas
       próprias filas
+- [ ] SES: identidade de domínio com DKIM e SPF, saída do sandbox e `AVISO_SES_REMETENTE` com
+      endereço do domínio verificado (sem isso o SES responde `MessageRejected`, que o Client_GO trata
+      como permanente)
 - [ ] Segredos no SSM (`AVISO_TOKEN_BOOKLIT`, URL do banco)
 - [ ] Imagem no ECR e terceiro serviço no `compose.yaml.tftpl`, com `mem_limit` de 64 MB
 - [ ] Conferir se a instância aguenta os três serviços
 - [ ] Pipeline no GitHub Actions: `go test`, build da imagem e deploy
+- [ ] Deploy: aceitar (ou tratar) que uma mensagem pode ficar até 30 s invisível quando a instância
+      antiga para, por causa do long polling cancelado (medido na fase 3). Se incomodar, comparar:
+      `visibility_timeout` menor na `email-alta`, ou terminar a chamada em andamento antes de sair
 
 ### Virada
 

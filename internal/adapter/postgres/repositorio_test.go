@@ -277,3 +277,146 @@ func TestSupressao(t *testing.T) {
 		t.Errorf("supressão de e-mail vazou para push: %q", motivo)
 	}
 }
+
+func TestMudarEstadoRecusaTransicaoInvalida(t *testing.T) {
+	repo := novoRepo(t)
+	ctx := context.Background()
+	n := notificacaoDeTeste("desafio-1")
+	if _, _, err := repo.Criar(ctx, n); err != nil {
+		t.Fatal(err)
+	}
+	em := time.Now().UTC().Truncate(time.Microsecond)
+
+	// aceita -> entregue pula o "enviada": só o recibo do provedor leva a "entregue"
+	err := repo.MudarEstado(ctx, n.ID, notificacao.EstadoAceita, notificacao.EstadoEntregue, "", em)
+	if !errors.Is(err, notificacao.ErrTransicaoInvalida) {
+		t.Fatalf("esperava ErrTransicaoInvalida, veio %v", err)
+	}
+	lida, _ := repo.Buscar(ctx, n.ID)
+	if lida.Estado != notificacao.EstadoAceita {
+		t.Errorf("a transição inválida mudou o estado para %s", lida.Estado)
+	}
+}
+
+func TestTentativas(t *testing.T) {
+	repo := novoRepo(t)
+	ctx := context.Background()
+	n := notificacaoDeTeste("desafio-1")
+	if _, _, err := repo.Criar(ctx, n); err != nil {
+		t.Fatal(err)
+	}
+	quando := time.Now().UTC().Truncate(time.Microsecond)
+
+	primeira := porta.Tentativa{
+		NotificacaoID: n.ID, Provedor: "ses", StatusHTTP: 429, Resultado: porta.ResultadoTemporario,
+		Motivo: "throttling", Resposta: "Rate exceeded", Latencia: 83 * time.Millisecond, TentadoEm: quando,
+	}
+	segunda := porta.Tentativa{
+		NotificacaoID: n.ID, Provedor: "ses", IDNoProvedor: "0100018c-abc", Resultado: porta.ResultadoSucesso,
+		Latencia: 120 * time.Millisecond, TentadoEm: quando.Add(2 * time.Second),
+	}
+	for _, tt := range []porta.Tentativa{primeira, segunda} {
+		if err := repo.RegistrarTentativa(ctx, tt); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := repo.Tentativas(ctx, n.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	primeira.Numero, segunda.Numero = 1, 2
+	if len(got) != 2 || got[0] != primeira || got[1] != segunda {
+		t.Fatalf("got = %+v\nquer = %+v e %+v", got, primeira, segunda)
+	}
+}
+
+func TestTentativaDeNotificacaoInexistente(t *testing.T) {
+	repo := novoRepo(t)
+	err := repo.RegistrarTentativa(context.Background(), porta.Tentativa{
+		NotificacaoID: notificacao.NovoID(), Provedor: "ses", Resultado: porta.ResultadoSucesso, TentadoEm: time.Now(),
+	})
+	if !errors.Is(err, porta.ErrNaoEncontrado) {
+		t.Fatalf("esperava ErrNaoEncontrado, veio %v", err)
+	}
+}
+
+// Vários workers registrando a mesma notificação ao mesmo tempo: nenhum número repetido,
+// nenhuma tentativa perdida.
+func TestTentativasConcorrentes(t *testing.T) {
+	repo := novoRepo(t)
+	ctx := context.Background()
+	n := notificacaoDeTeste("desafio-1")
+	if _, _, err := repo.Criar(ctx, n); err != nil {
+		t.Fatal(err)
+	}
+
+	const workers = 4
+	var wg sync.WaitGroup
+	erros := make(chan error, workers)
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			erros <- repo.RegistrarTentativa(ctx, porta.Tentativa{
+				NotificacaoID: n.ID, Provedor: "ses", Resultado: porta.ResultadoSucesso, TentadoEm: time.Now().UTC(),
+			})
+		}()
+	}
+	wg.Wait()
+	close(erros)
+	for err := range erros {
+		if err != nil {
+			t.Error(err)
+		}
+	}
+
+	got, err := repo.Tentativas(ctx, n.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != workers {
+		t.Fatalf("tentativas = %d, queria %d", len(got), workers)
+	}
+	for i, tt := range got {
+		if tt.Numero != i+1 {
+			t.Errorf("posição %d tem número %d", i, tt.Numero)
+		}
+	}
+}
+
+// Uma chamada local ao provedor leva menos de 1 ms. A latência não pode virar NULL por isso:
+// NULL quer dizer "o provedor nem foi chamado" (renderização recusada).
+func TestTentativaRapidaGuardaLatenciaDeAoMenos1ms(t *testing.T) {
+	repo := novoRepo(t)
+	ctx := context.Background()
+	n := notificacaoDeTeste("desafio-1")
+	if _, _, err := repo.Criar(ctx, n); err != nil {
+		t.Fatal(err)
+	}
+	agora := time.Now().UTC()
+	for _, tt := range []porta.Tentativa{
+		{NotificacaoID: n.ID, Provedor: "ses", Resultado: porta.ResultadoSucesso, Latencia: 300 * time.Microsecond, TentadoEm: agora},
+		{NotificacaoID: n.ID, Provedor: "ses", Resultado: porta.ResultadoPermanente, Motivo: "dados_invalidos", TentadoEm: agora}, // sem chamada
+	} {
+		if err := repo.RegistrarTentativa(ctx, tt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var nulos []bool
+	linhas, err := repo.pool.Query(ctx, `SELECT latencia_ms IS NULL FROM t_tentativa_envio ORDER BY numero`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer linhas.Close()
+	for linhas.Next() {
+		var nulo bool
+		if err := linhas.Scan(&nulo); err != nil {
+			t.Fatal(err)
+		}
+		nulos = append(nulos, nulo)
+	}
+	if len(nulos) != 2 || nulos[0] || !nulos[1] {
+		t.Errorf("latencia_ms NULL = %v; queria [false true]", nulos)
+	}
+}

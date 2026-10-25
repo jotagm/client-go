@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/jotagm/client-go/internal/notificacao"
@@ -18,7 +19,10 @@ type Repositorio struct {
 	pool *pgxpool.Pool
 }
 
-var _ porta.Repositorio = (*Repositorio)(nil)
+var (
+	_ porta.Repositorio        = (*Repositorio)(nil)
+	_ porta.RegistroTentativas = (*Repositorio)(nil)
+)
 
 func NovoRepositorio(pool *pgxpool.Pool) *Repositorio {
 	return &Repositorio{pool: pool}
@@ -99,6 +103,10 @@ func (r *Repositorio) Buscar(ctx context.Context, id string) (notificacao.Notifi
 }
 
 func (r *Repositorio) MudarEstado(ctx context.Context, id string, de, para notificacao.Estado, motivo string, em time.Time) error {
+	// a regra vale para qualquer chamador, não só para o Processador
+	if err := de.PodeIrPara(para); err != nil {
+		return err
+	}
 	tag, err := r.pool.Exec(ctx, `
 		UPDATE t_notificacao
 		   SET estado = $3, motivo = NULLIF($4, ''), atualizado_em = $5
@@ -119,6 +127,80 @@ func (r *Repositorio) MudarEstado(ctx context.Context, id string, de, para notif
 		return porta.ErrNaoEncontrado
 	}
 	return porta.ErrConcorrencia
+}
+
+const (
+	codigoViolacaoUnica = "23505"
+	codigoViolacaoFK    = "23503"
+	maxTentativasNumero = 5
+)
+
+// RegistrarTentativa grava a próxima tentativa da notificação. Dois workers podem calcular o
+// mesmo número ao mesmo tempo; o índice único recusa o segundo e ele tenta de novo.
+func (r *Repositorio) RegistrarTentativa(ctx context.Context, t porta.Tentativa) error {
+	const inserir = `
+		INSERT INTO t_tentativa_envio (
+			notificacao_id, numero, provedor, id_no_provedor, status_http, resultado,
+			motivo, resposta_bruta, latencia_ms, tentado_em)
+		VALUES ($1,
+			(SELECT COALESCE(MAX(numero), 0) + 1 FROM t_tentativa_envio WHERE notificacao_id = $1),
+			$2, NULLIF($3, ''), NULLIF($4::int, 0), $5, NULLIF($6, ''), NULLIF($7, ''),
+			NULLIF($8::int, 0), $9)`
+	var err error
+	for range maxTentativasNumero {
+		_, err = r.pool.Exec(ctx, inserir, t.NotificacaoID, t.Provedor, t.IDNoProvedor, t.StatusHTTP,
+			t.Resultado, t.Motivo, t.Resposta, latenciaMs(t.Latencia), t.TentadoEm)
+		var pgErr *pgconn.PgError
+		switch {
+		case err == nil:
+			return nil
+		case errors.As(err, &pgErr) && pgErr.Code == codigoViolacaoFK:
+			return porta.ErrNaoEncontrado
+		case errors.As(err, &pgErr) && pgErr.Code == codigoViolacaoUnica:
+			continue // outro worker pegou o mesmo número: calcula de novo
+		default:
+			return fmt.Errorf("registrar tentativa: %w", err)
+		}
+	}
+	return fmt.Errorf("registrar tentativa: número disputado %d vezes: %w", maxTentativasNumero, err)
+}
+
+// latenciaMs arredonda para cima: uma chamada de 0,3 ms guarda 1. Zero fica reservado para
+// "o provedor não foi chamado" (NULL na coluna), senão uma resposta rápida do emulador local
+// seria confundida com uma tentativa que nem saiu daqui.
+func latenciaMs(d time.Duration) int {
+	if d <= 0 {
+		return 0
+	}
+	return int((d + time.Millisecond - 1) / time.Millisecond)
+}
+
+func (r *Repositorio) Tentativas(ctx context.Context, notificacaoID string) ([]porta.Tentativa, error) {
+	if !pareceUUID(notificacaoID) {
+		return nil, nil
+	}
+	linhas, err := r.pool.Query(ctx, `
+		SELECT notificacao_id, numero, provedor, COALESCE(id_no_provedor, ''), COALESCE(status_http, 0),
+		       resultado, COALESCE(motivo, ''), COALESCE(resposta_bruta, ''), COALESCE(latencia_ms, 0),
+		       tentado_em
+		  FROM t_tentativa_envio WHERE notificacao_id = $1 ORDER BY numero`, notificacaoID)
+	if err != nil {
+		return nil, err
+	}
+	defer linhas.Close()
+	var out []porta.Tentativa
+	for linhas.Next() {
+		var t porta.Tentativa
+		var ms int
+		if err := linhas.Scan(&t.NotificacaoID, &t.Numero, &t.Provedor, &t.IDNoProvedor, &t.StatusHTTP,
+			&t.Resultado, &t.Motivo, &t.Resposta, &ms, &t.TentadoEm); err != nil {
+			return nil, err
+		}
+		t.Latencia = time.Duration(ms) * time.Millisecond
+		t.TentadoEm = t.TentadoEm.UTC()
+		out = append(out, t)
+	}
+	return out, linhas.Err()
 }
 
 func (r *Repositorio) buscarUma(ctx context.Context, onde string, args ...any) (notificacao.Notificacao, error) {

@@ -17,15 +17,20 @@ type Repositorio struct {
 	supressoes map[string]string // canal|destinatario -> motivo
 	porID      map[string]notificacao.Notificacao
 	porChave   map[string]string // origem|chave -> id
+	tentativas map[string][]porta.Tentativa
 }
 
-var _ porta.Repositorio = (*Repositorio)(nil)
+var (
+	_ porta.Repositorio        = (*Repositorio)(nil)
+	_ porta.RegistroTentativas = (*Repositorio)(nil)
+)
 
 func NovoRepositorio() *Repositorio {
 	return &Repositorio{
 		supressoes: map[string]string{},
 		porID:      map[string]notificacao.Notificacao{},
 		porChave:   map[string]string{},
+		tentativas: map[string][]porta.Tentativa{},
 	}
 }
 
@@ -92,6 +97,10 @@ func (r *Repositorio) Buscar(_ context.Context, id string) (notificacao.Notifica
 }
 
 func (r *Repositorio) MudarEstado(_ context.Context, id string, de, para notificacao.Estado, motivo string, em time.Time) error {
+	// a regra vale para qualquer adapter, não só para quem chama
+	if err := de.PodeIrPara(para); err != nil {
+		return err
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	n, ok := r.porID[id]
@@ -104,4 +113,21 @@ func (r *Repositorio) MudarEstado(_ context.Context, id string, de, para notific
 	n.Estado, n.Motivo, n.AtualizadoEm = para, motivo, em
 	r.porID[id] = n
 	return nil
+}
+
+func (r *Repositorio) RegistrarTentativa(_ context.Context, t porta.Tentativa) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.porID[t.NotificacaoID]; !ok {
+		return porta.ErrNaoEncontrado
+	}
+	t.Numero = len(r.tentativas[t.NotificacaoID]) + 1
+	r.tentativas[t.NotificacaoID] = append(r.tentativas[t.NotificacaoID], t)
+	return nil
+}
+
+func (r *Repositorio) Tentativas(_ context.Context, notificacaoID string) ([]porta.Tentativa, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]porta.Tentativa(nil), r.tentativas[notificacaoID]...), nil
 }

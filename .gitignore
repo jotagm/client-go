@@ -11,5 +11,6 @@ go.work.sum
 *.tfplan
 relatorio-floci.txt
 client-go-validacao.log
+client-go-validacao-ses.log
 .idea/
 .vscode/

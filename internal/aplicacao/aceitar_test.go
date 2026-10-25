@@ -28,7 +28,7 @@ func novoCenario(t *testing.T) cenario {
 	repo := memoria.NovoRepositorio()
 	repo.AdicionarTemplate(notificacao.Template{
 		Nome: "otp-login", Versao: 1, Canal: notificacao.CanalEmail,
-		Assunto: "Seu código", Corpo: "{{.codigo}}", Variaveis: []string{"codigo"},
+		Assunto: "Seu código", Corpo: "Código {{.codigo}}, vale {{.minutos}} min.", Variaveis: []string{"codigo"},
 	})
 	pub := memoria.NovoPublicador()
 	logs := &bytes.Buffer{}
@@ -216,7 +216,8 @@ func TestAceitarFalhaNaPublicacao(t *testing.T) {
 func TestAceitarVersaoMaisRecente(t *testing.T) {
 	c := novoCenario(t)
 	c.repo.AdicionarTemplate(notificacao.Template{
-		Nome: "otp-login", Versao: 2, Canal: notificacao.CanalEmail, Variaveis: []string{"codigo"},
+		Nome: "otp-login", Versao: 2, Canal: notificacao.CanalEmail,
+		Assunto: "Seu código", Corpo: "Código {{.codigo}}, vale {{.minutos}} min.", Variaveis: []string{"codigo"},
 	})
 	n, _, err := c.servico.Aceitar(context.Background(), pedidoOTP())
 	if err != nil {
@@ -228,7 +229,8 @@ func TestAceitarVersaoMaisRecente(t *testing.T) {
 
 	// v3 publicada depois: a repetição com versao=0 ainda é a mesma notificação
 	c.repo.AdicionarTemplate(notificacao.Template{
-		Nome: "otp-login", Versao: 3, Canal: notificacao.CanalEmail, Variaveis: []string{"codigo"},
+		Nome: "otp-login", Versao: 3, Canal: notificacao.CanalEmail,
+		Assunto: "Seu código", Corpo: "Código {{.codigo}}, vale {{.minutos}} min.", Variaveis: []string{"codigo"},
 	})
 	repetida, nova, err := c.servico.Aceitar(context.Background(), pedidoOTP())
 	if err != nil || nova || repetida.ID != n.ID {
@@ -262,5 +264,103 @@ func TestCodigoNaoApareceNoLog(t *testing.T) {
 
 	if strings.Contains(c.logs.String(), "482913") {
 		t.Fatalf("o código apareceu no log:\n%s", c.logs.String())
+	}
+}
+
+func TestAceitarHorariosEmMicrossegundos(t *testing.T) {
+	c := novoCenario(t)
+	c.servico.agora = func() time.Time { return agoraFixo.Add(123456789 * time.Nanosecond) }
+	p := pedidoOTP()
+	expira := agoraFixo.Add(10*time.Minute + 987654321*time.Nanosecond)
+	p.ExpiraEm = &expira
+
+	n, _, err := c.servico.Aceitar(context.Background(), p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for nome, horario := range map[string]time.Time{
+		"CriadoEm": n.CriadoEm, "AtualizadoEm": n.AtualizadoEm, "ExpiraEm": *n.ExpiraEm,
+	} {
+		if !horario.Equal(horario.Truncate(time.Microsecond)) {
+			t.Errorf("%s tem precisão maior que microssegundos: %s", nome, horario.Format(time.RFC3339Nano))
+		}
+	}
+}
+
+// Toda mudança de estado deixa uma linha "estado alterado" com o estado novo e o motivo.
+func TestAceitarLogaCadaMudancaDeEstado(t *testing.T) {
+	c := novoCenario(t)
+	if _, _, err := c.servico.Aceitar(context.Background(), pedidoOTP()); err != nil {
+		t.Fatal(err)
+	}
+	if l := c.logs.String(); !strings.Contains(l, "estado alterado") || !strings.Contains(l, "para=aceita") {
+		t.Errorf("aceitação sem linha de estado:\n%s", l)
+	}
+
+	s := novoCenario(t)
+	s.repo.Suprimir("jota@exemplo.com", notificacao.CanalEmail, "bounce")
+	if _, _, err := s.servico.Aceitar(context.Background(), pedidoOTP()); err != nil {
+		t.Fatal(err)
+	}
+	if l := s.logs.String(); !strings.Contains(l, "para=suprimida") || !strings.Contains(l, "motivo=bounce") {
+		t.Errorf("supressão sem linha de estado:\n%s", l)
+	}
+
+	f := novoCenario(t)
+	f.publicador.Falhar(errors.New("SNS fora do ar"))
+	_, _, _ = f.servico.Aceitar(context.Background(), pedidoOTP())
+	if l := f.logs.String(); !strings.Contains(l, "de=aceita para=falhou motivo=publicacao") {
+		t.Errorf("falha de publicação sem linha de estado:\n%s", l)
+	}
+}
+
+// O que nunca viraria e-mail é recusado no aceite, não na fila.
+func TestAceitarRecusaQuemNaoRenderiza(t *testing.T) {
+	casos := []struct {
+		nome   string
+		mudar  func(*Pedido)
+		campo  string
+		contem string
+	}{
+		{"código vazio", func(p *Pedido) { p.Variaveis["codigo"] = "" }, "variaveis", `"codigo" está vazia`},
+		{"sem expira_em num template com minutos", func(p *Pedido) { p.ExpiraEm = nil }, "expira_em", "expira_em"},
+	}
+	for _, tc := range casos {
+		t.Run(tc.nome, func(t *testing.T) {
+			c := novoCenario(t)
+			p := pedidoOTP()
+			tc.mudar(&p)
+
+			_, _, err := c.servico.Aceitar(context.Background(), p)
+			var ev *ErrValidacao
+			if !errors.As(err, &ev) {
+				t.Fatalf("esperava ErrValidacao, veio %v", err)
+			}
+			if msg := ev.Campos[tc.campo]; !strings.Contains(msg, tc.contem) {
+				t.Errorf("campos = %v", ev.Campos)
+			}
+			if len(c.publicador.Publicadas()) != 0 {
+				t.Error("publicou um pedido que não renderiza")
+			}
+		})
+	}
+}
+
+func TestAceitarTemplateQuebradoNaoCulpaOChamador(t *testing.T) {
+	c := novoCenario(t)
+	c.repo.AdicionarTemplate(notificacao.Template{
+		Nome: "quebrado", Versao: 1, Canal: notificacao.CanalEmail,
+		Assunto: "x", Corpo: "{{.codigo", Variaveis: []string{"codigo"},
+	})
+	p := pedidoOTP()
+	p.Template = "quebrado"
+
+	_, _, err := c.servico.Aceitar(context.Background(), p)
+	var ev *ErrValidacao
+	if err == nil || errors.As(err, &ev) {
+		t.Fatalf("template quebrado é erro interno, não 422: %v", err)
+	}
+	if !errors.Is(err, notificacao.ErrTemplateInvalido) {
+		t.Errorf("err = %v", err)
 	}
 }

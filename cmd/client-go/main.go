@@ -35,6 +35,7 @@ import (
 
 	"github.com/jotagm/client-go/internal/adapter/memoria"
 	"github.com/jotagm/client-go/internal/adapter/postgres"
+	"github.com/jotagm/client-go/internal/adapter/ses"
 	"github.com/jotagm/client-go/internal/adapter/sns"
 	"github.com/jotagm/client-go/internal/adapter/sqs"
 	"github.com/jotagm/client-go/internal/api"
@@ -67,7 +68,7 @@ func rodar(log *slog.Logger) error {
 	repo := postgres.NovoRepositorio(pool)
 
 	var awsCfg aws.Config
-	if cfg.topico != "" || len(cfg.filas) > 0 {
+	if cfg.topico != "" || len(cfg.filas) > 0 || cfg.provedor == provedorSES {
 		awsCfg, err = awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(envOu("AWS_REGION", "us-east-1")))
 		if err != nil {
 			return fmt.Errorf("configuração da AWS: %w", err)
@@ -83,10 +84,17 @@ func rodar(log *slog.Logger) error {
 		log.Warn("AVISO_TOPICO_ARN vazio: publicador em memória, nenhuma notificação sai do processo")
 	}
 
-	// Fase 3 troca pelo entregador real (template + SES).
-	entregador := memoria.EntregaSimulada{Log: log}
-	if len(cfg.filas) > 0 {
-		log.Warn("entrega simulada: as notificações viram 'enviada' sem e-mail de verdade")
+	var entregador porta.Entregador
+	switch cfg.provedor {
+	case provedorSES:
+		sesProvedor := ses.Novo(ses.NovoCliente(awsCfg), cfg.sesRemetente, cfg.sesConjunto, 0)
+		entregador = aplicacao.NovoEntregadorEmail(repo, repo, sesProvedor, log)
+		log.Info("entrega pelo SES", "remetente", cfg.sesRemetente, "configuration_set", cfg.sesConjunto)
+	default:
+		entregador = memoria.EntregaSimulada{Log: log}
+		if len(cfg.filas) > 0 {
+			log.Warn("entrega simulada: as notificações viram 'enviada' sem e-mail de verdade (AVISO_PROVEDOR=ses liga o SES)")
+		}
 	}
 
 	servico := aplicacao.NovoServico(repo, publicador, log)
@@ -147,13 +155,26 @@ type config struct {
 	topico   string
 	filas    []fila
 	workers  int
+
+	provedor     string // "simulado" (padrão) ou "ses"
+	sesRemetente string
+	sesConjunto  string
 }
+
+const (
+	provedorSimulado = "simulado"
+	provedorSES      = "ses"
+)
 
 func lerConfig() (config, error) {
 	cfg := config{
 		endereco: envOu("AVISO_ENDERECO", ":8081"),
 		dbURL:    os.Getenv("AVISO_DB_URL"),
 		topico:   os.Getenv("AVISO_TOPICO_ARN"),
+
+		provedor:     strings.ToLower(envOu("AVISO_PROVEDOR", provedorSimulado)),
+		sesRemetente: strings.TrimSpace(os.Getenv("AVISO_SES_REMETENTE")),
+		sesConjunto:  strings.TrimSpace(os.Getenv("AVISO_SES_CONJUNTO")),
 	}
 	if cfg.dbURL == "" {
 		return cfg, errors.New("AVISO_DB_URL não definida")
@@ -164,6 +185,18 @@ func lerConfig() (config, error) {
 	}
 	if cfg.filas, err = lerFilas(os.Getenv("AVISO_FILAS")); err != nil {
 		return cfg, fmt.Errorf("AVISO_FILAS: %w", err)
+	}
+	switch cfg.provedor {
+	case provedorSimulado:
+	case provedorSES:
+		if cfg.sesRemetente == "" {
+			return cfg, errors.New("AVISO_PROVEDOR=ses precisa de AVISO_SES_REMETENTE (ex.: Booklit <codigo@booklit.bio>)")
+		}
+		if strings.ContainsAny(cfg.sesRemetente, "\r\n") {
+			return cfg, errors.New("AVISO_SES_REMETENTE não pode ter quebra de linha")
+		}
+	default:
+		return cfg, fmt.Errorf("AVISO_PROVEDOR %q desconhecido: use %s ou %s", cfg.provedor, provedorSimulado, provedorSES)
 	}
 	cfg.workers, err = strconv.Atoi(envOu("AVISO_WORKERS", "4"))
 	if err != nil || cfg.workers < 1 || cfg.workers > 64 {

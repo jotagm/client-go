@@ -347,3 +347,61 @@ func esperarAte(t *testing.T, limite time.Duration, condicao func() bool) {
 	}
 	t.Fatal("condição não foi atingida a tempo")
 }
+
+// Achado do lab: dois códigos vencidos foram descartados sem nenhuma linha de log.
+func TestProcessarLogaCadaMudancaDeEstado(t *testing.T) {
+	casos := []struct {
+		nome   string
+		erros  []error
+		expira time.Duration // validade a partir de agoraFixo
+		agora  time.Duration // quando a mensagem é processada
+		quer   string
+	}{
+		{"enviada", nil, 10 * time.Minute, 0, "de=aceita para=enviada motivo="},
+		{"expirada", nil, 10 * time.Minute, 11 * time.Minute, "de=aceita para=expirada motivo=expirou_antes_do_envio"},
+		{"permanente", []error{porta.ErrPermanente}, 10 * time.Minute, 0, "de=aceita para=falhou motivo=erro_permanente"},
+		{"expiraria", []error{porta.ErrTemporario}, 1 * time.Second, 0, "de=aceita para=expirada motivo=expiraria_antes_da_retentativa"},
+	}
+	for _, tc := range casos {
+		t.Run(tc.nome, func(t *testing.T) {
+			c := novoCenarioConsumo(t, tc.erros...)
+			n, m := c.gravar(t, agoraFixo.Add(tc.expira))
+			c.agora = agoraFixo.Add(tc.agora)
+			c.processador.Processar(context.Background(), m)
+
+			linhas := c.logs.String()
+			if !strings.Contains(linhas, "estado alterado") || !strings.Contains(linhas, tc.quer) {
+				t.Errorf("faltou %q no log:\n%s", tc.quer, linhas)
+			}
+			if !strings.Contains(linhas, "id="+n.ID) {
+				t.Errorf("a linha de estado precisa do id:\n%s", linhas)
+			}
+			if strings.Count(linhas, " id=") > 0 && strings.Contains(linhas, "id="+n.ID+" id=") {
+				t.Errorf("id duplicado na linha:\n%s", linhas)
+			}
+		})
+	}
+}
+
+func TestProcessarNaoLogaEstadoQuandoOutroProcessoVenceu(t *testing.T) {
+	c := novoCenarioConsumo(t)
+	n, m := c.gravar(t, agoraFixo.Add(10*time.Minute))
+	// simula o outro worker: muda o estado entre a leitura e a gravação
+	c.entregador = memoria.NovoEntregador()
+	c.processador.entregador = concorrente{repo: c.repo, id: n.ID}
+
+	c.processador.Processar(context.Background(), m)
+	if strings.Contains(c.logs.String(), "estado alterado") {
+		t.Errorf("logou uma mudança que não foi ele quem fez:\n%s", c.logs.String())
+	}
+}
+
+// concorrente entrega "com sucesso" depois de outro processo já ter mudado o estado.
+type concorrente struct {
+	repo *memoria.Repositorio
+	id   string
+}
+
+func (e concorrente) Entregar(ctx context.Context, _ notificacao.Notificacao, _ map[string]string) error {
+	return e.repo.MudarEstado(ctx, e.id, notificacao.EstadoAceita, notificacao.EstadoEnviada, "", agoraFixo)
+}

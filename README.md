@@ -25,7 +25,7 @@ Consumidores Go (um laço por fila, N workers)
   → lê a notificação do banco; as variáveis vêm do envelope
   → já processada?           → apaga a mensagem (a fila entrega "pelo menos uma vez")
   → expirou?                 → expirada
-  → entrega (fase 3: template + SES; por enquanto simulada)
+  → entrega: renderiza o template, chama o SES e registra a tentativa em t_tentativa_envio
        ok                    → enviada
        erro permanente       → falhou
        erro temporário       → ChangeMessageVisibility com backoff (2s, 4s, 8s, 16s)
@@ -50,7 +50,7 @@ internal/notificacao/   domínio: Notificacao, Template, Envelope, Estado e tran
 internal/porta/         portas: Repositorio, Publicador, Consumidor, Entregador, Provedor
 internal/aplicacao/     casos de uso: aceitar, buscar, processar mensagem, laço de consumo, backoff
 internal/api/           HTTP e autenticação por origem
-internal/adapter/       postgres, sns, sqs e memoria (para teste e para rodar sem AWS)
+internal/adapter/       postgres, sns, sqs, ses e memoria (para teste e para rodar sem AWS)
 infra/                  Terraform: módulo de mensageria e ambiente do Floci
 db/                     scripts SQL
 docs/                   ADRs e plano de implementação
@@ -70,7 +70,7 @@ docker compose up -d          # Postgres do Client_GO na porta 5433, já com os 
 Do WSL, com o Floci no ar no lab:
 
 ```bash
-bash /mnt/d/Projetos/aviso/scripts/rodar-no-lab.sh
+bash /mnt/d/Projetos/Client_GO/scripts/rodar-no-lab.sh
 ```
 
 Copia o projeto para `~/client-go-validacao` no lab, roda `scripts/validar-floci.sh` lá
@@ -125,12 +125,17 @@ go run ./cmd/client-go
 | `AVISO_TOPICO_ARN` | Tópico SNS. Vazio = publicador em memória (nada sai do processo) |
 | `AVISO_FILAS` | `nome=url`, separados por vírgula. Vazio = sem consumidores |
 | `AVISO_WORKERS` | Workers por fila (padrão 4) |
-| `AWS_ENDPOINT_URL` | Aponta o SDK para o Floci; em produção, não defina |
+| `AVISO_PROVEDOR` | `simulado` (padrão) ou `ses` |
+| `AVISO_SES_REMETENTE` | Obrigatória com `ses`. Ex.: `Booklit <codigo@booklit.bio>` |
+| `AVISO_SES_CONJUNTO` | Configuration set do SES (opcional; os eventos de entrega da fase 6) |
+| `AWS_ENDPOINT_URL` | Aponta o SDK (SNS, SQS e SES) para o Floci; em produção, não defina |
 
 No PowerShell, troque o `VAR=valor comando` por `$env:VAR="valor"` antes do comando.
 
-**Fase 2:** a entrega ainda é simulada. A notificação vira `enviada` e o log registra
-"entrega simulada", mas nenhum e-mail sai. O SES entra na fase 3.
+**Entrega.** Por padrão a entrega é simulada: a notificação vira `enviada` e o log registra
+"entrega simulada", sem e-mail nenhum. Com `AVISO_PROVEDOR=ses` o Client_GO renderiza o template e
+manda pelo SES v2. O remetente precisa ser uma identidade verificada no SES (no Floci e no moto, crie com
+`aws sesv2 create-email-identity --email-identity codigo@exemplo.com`).
 
 ## API
 
@@ -165,7 +170,11 @@ O canal vem do template.
 | `503` | Gravou, mas não conseguiu publicar; a notificação fica como `falhou/publicacao` |
 
 Os valores das variáveis não são gravados no banco, não aparecem no log e não voltam na resposta.
-Eles só existem na requisição e na mensagem da fila (criptografada em repouso).
+Eles só existem na requisição, na mensagem da fila (criptografada em repouso) e no e-mail enviado.
+
+O pedido é recusado com `422` se o template não conseguir renderizar com os dados dele: variável vazia,
+ou template que usa `{{.minutos}}` sem `expira_em`. `minutos` é calculado pelo Client_GO (arredondado para
+cima) e não pode vir nas variáveis.
 
 ### `GET /notificacoes/{id}`
 
@@ -177,7 +186,6 @@ Plano completo em [`docs/plano-de-implementacao.md`](docs/plano-de-implementacao
 
 1. ~~`POST /notificacoes` com idempotência e o adapter Postgres.~~ ✅
 2. ~~Publicador SNS e consumidor SQS + versões em memória.~~ ✅
-3. Entrega de verdade: templates com `missingkey=error`, provedor SES, histórico de tentativas.
+3. ~~Entrega de verdade: templates com `missingkey=error`, provedor SES, histórico de tentativas.~~ ✅
 4. Integração com o Booklit.
 5. Produção, recibos, reconciliação e painel.
-# client-go
