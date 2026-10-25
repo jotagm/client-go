@@ -1,0 +1,15 @@
+/bin/
+*.exe
+*.test
+*.out
+.env
+go.work
+go.work.sum
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+relatorio-floci.txt
+client-go-validacao.log
+.idea/
+.vscode/

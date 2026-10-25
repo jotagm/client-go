@@ -1,0 +1,21 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: aviso
+      POSTGRES_USER: aviso
+      POSTGRES_PASSWORD: aviso
+    ports:
+      - "127.0.0.1:5433:5432" # 5432 fica livre para o Postgres do Booklit
+    volumes:
+      - aviso_pgdata:/var/lib/postgresql/data
+      - ./db:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aviso -d aviso"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  aviso_pgdata:
