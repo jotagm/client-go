@@ -1,0 +1,10 @@
+.git
+.github
+.lab
+bin
+infra
+docs
+scripts
+deploy
+*.log
+relatorio-floci.txt

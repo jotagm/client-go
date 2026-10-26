@@ -10,6 +10,8 @@
 //	AVISO_WORKERS     workers por fila (padrão 4)
 //	AWS_REGION        padrão us-east-1
 //	AWS_ENDPOINT_URL  aponta o SDK para o Floci (http://localhost:4566)
+//
+// Subcomandos: servir (padrão), migrar (aplica db/*.sql e sai) e sonda (healthcheck do container).
 package main
 
 import (
@@ -17,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -33,6 +36,7 @@ import (
 	awssqs "github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/jotagm/client-go/db"
 	"github.com/jotagm/client-go/internal/adapter/memoria"
 	"github.com/jotagm/client-go/internal/adapter/postgres"
 	"github.com/jotagm/client-go/internal/adapter/ses"
@@ -40,15 +44,80 @@ import (
 	"github.com/jotagm/client-go/internal/adapter/sqs"
 	"github.com/jotagm/client-go/internal/api"
 	"github.com/jotagm/client-go/internal/aplicacao"
+	"github.com/jotagm/client-go/internal/migracao"
 	"github.com/jotagm/client-go/internal/porta"
 )
 
 func main() {
 	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-	if err := rodar(log); err != nil {
-		log.Error("client-go parou", "erro", err)
+	comando := "servir"
+	if len(os.Args) > 1 {
+		comando = os.Args[1]
+	}
+
+	var err error
+	switch comando {
+	case "servir":
+		err = rodar(log)
+	case "migrar":
+		err = migrar(log)
+	case "sonda":
+		err = sonda()
+	default:
+		fmt.Fprintf(os.Stderr, "uso: client-go [servir|migrar|sonda]\n  servir  sobe a API e os consumidores (padrão)\n  migrar  aplica os scripts de db/ e sai\n  sonda   consulta /saude (healthcheck do container)\n")
+		os.Exit(2)
+	}
+	if err != nil {
+		log.Error("client-go parou", "comando", comando, "erro", err)
 		os.Exit(1)
 	}
+}
+
+// migrar aplica as migrações embutidas no binário e termina. Só precisa de AVISO_DB_URL.
+func migrar(log *slog.Logger) error {
+	url := os.Getenv("AVISO_DB_URL")
+	if url == "" {
+		return errors.New("AVISO_DB_URL não definida")
+	}
+	ctx, parar := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer parar()
+	pool, err := conectar(ctx, url)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+	_, err = migracao.Aplicar(ctx, pool, db.Arquivos, log)
+	return err
+}
+
+// sonda é o healthcheck do container: a imagem não tem shell nem curl, então o próprio
+// binário faz o GET. Sai com erro se /saude não responder 200 em 3 segundos.
+func sonda() error {
+	return consultarSaude(&http.Client{Timeout: 3 * time.Second}, urlDaSonda(envOu("AVISO_ENDERECO", ":8081")))
+}
+
+// urlDaSonda troca o host vazio ou curinga do endereço de escuta por 127.0.0.1.
+func urlDaSonda(endereco string) string {
+	host, porta, err := net.SplitHostPort(endereco)
+	if err != nil {
+		return "http://127.0.0.1:8081/saude"
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "127.0.0.1"
+	}
+	return "http://" + net.JoinHostPort(host, porta) + "/saude"
+}
+
+func consultarSaude(c *http.Client, url string) error {
+	resp, err := c.Get(url)
+	if err != nil {
+		return fmt.Errorf("sonda: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("sonda: %s respondeu %d", url, resp.StatusCode)
+	}
+	return nil
 }
 
 func rodar(log *slog.Logger) error {

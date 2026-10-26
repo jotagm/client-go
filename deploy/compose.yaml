@@ -1,0 +1,33 @@
+# Client_GO como terceiro serviço da EC2 do Booklit. Projeto próprio (pasta /opt/client-go),
+# mas na MESMA rede do Booklit: o Spring chama http://client-go:8081 pelo nome. A porta não é
+# publicada no host e o security group não abre a 8081, então só os containers dessa rede
+# alcançam a API.
+#
+# IMAGE vem do .env que o deploy.sh escreve; o resto da configuração vem do SSM, em app.env.
+services:
+  client-go:
+    image: ${IMAGE:?defina IMAGE}
+    container_name: client-go
+    restart: unless-stopped
+    env_file: app.env
+    # t4g.micro tem 1 GB, dividido com o Spring (700m) e o Caddy (64m). O Go ocioso fica em
+    # ~20 MB. GOMEMLIMIT faz o coletor apertar antes de chegar no teto do container; se vazar
+    # mesmo assim, o kernel mata só este container (o restart sobe de novo).
+    mem_limit: 64m
+    environment:
+      GOMEMLIMIT: 48MiB
+    # Janela do SIGTERM até o SIGKILL: o desligamento do Client_GO espera os workers (10 s).
+    stop_grace_period: 20s
+    logging:
+      driver: awslogs
+      options:
+        awslogs-region: ${AWS_REGION:-us-east-1}
+        awslogs-group: ${LOG_GROUP:-/booklit/prod}
+        awslogs-stream: client-go
+    networks:
+      - booklit
+
+networks:
+  booklit:
+    external: true
+    name: ${REDE_BOOKLIT:-booklit_default}

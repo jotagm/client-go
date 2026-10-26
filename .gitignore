@@ -14,3 +14,8 @@ client-go-validacao.log
 client-go-validacao-ses.log
 .idea/
 .vscode/
+.lab/
+infra/envs/prod/terraform.tfvars
+infra/envs/prod/*.tfstate*
+infra/envs/prod/.terraform/
+*.tfplan

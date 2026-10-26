@@ -134,7 +134,7 @@ consumindo 4 pedidos de ponta a ponta.
 
 **Validação:** `scripts/validar-floci.sh` ganhou a seção 7 (instância com `AVISO_PROVEDOR=ses`): três
 pedidos chegam a `enviada`, `t_tentativa_envio` tem uma linha de sucesso por pedido e o e-mail aparece no
-emulador com o código e a validade renderizados. Passou no moto e no Floci do lab (25/out, "TUDO OK").
+emulador com o código e a validade renderizados. Passou no moto (25/out); falta rodar no Floci do lab.
 
 **Achados do teste de integração (moto, 25/out):**
 - O SES recusa remetente não verificado com `MessageRejected` (permanente). Em produção isso vira
@@ -145,29 +145,40 @@ emulador com o código e a validade renderizados. Passou no moto e no Floci do l
   entregue uma vez só. É o "pelo menos uma vez" funcionando, e para um código de 10 minutos 30 s de
   atraso no deploy é aceitável. Fica registrado para a fase 5 (deploy contínuo) e para a fase 7
   (alerta de idade da mensagem mais antiga).
-- Floci: os e-mails enviados aparecem em `GET /_aws/ses` (confirmado no lab).
-- **Latência rápida:** o Floci local responde em menos de 1 ms, e `NULLIF(latencia_ms, 0)` gravava
-  `NULL` (a validação do lab contou 2 tentativas completas em vez de 3). A latência agora é arredondada
-  para cima; `NULL` quer dizer só "o provedor não foi chamado".
+- Floci: o endereço de leitura dos e-mails (`/_aws/ses`) ainda não foi confirmado. Se for outro, o
+  script aceita `SES_INSPECAO_URL`.
 
 **Pronto quando:** o e-mail aparece em `GET <floci>/_aws/ses`, e os testes com o provedor falso
-cobrem os quatro cenários. (Os dois: feitos.)
+cobrem os quatro cenários. (Os testes: feito. O Floci do lab: pendente.)
 
 ---
 
-## Fase 4: Integração com o Booklit
+## Fase 4: Integração com o Booklit ✅
 
 **Meta:** o Booklit envia pelo Client_GO, com volta para o SES direto sem deploy de código.
 
-- [ ] `ClientGoEnviadorDeOtp` implementando `EnviadorDeOtp` (o `auth-core` não muda)
-  - [ ] Envio no `afterCommit`, igual ao `SesEnviadorDeOtp`
-  - [ ] `Idempotency-Key` = `desafioId`
-  - [ ] `expira_em` = `Mensagem.expiraEm()`
-  - [ ] Timeout curto (2 s): falha é logada só com o `desafioId`
-- [ ] Propriedade `booklit.email.provedor=ses|aviso` escolhendo o bean em `AuthOtpConfig`
-- [ ] Ajustar `OtpEmailIntegracaoTest` e `LoginComCodigoIntegracaoTest` para os dois modos
-      (no modo `aviso`, servidor HTTP falso)
-- [ ] Teste ponta a ponta local: Booklit + Client_GO + Floci, login com código funcionando
+- [x] `ClientGoEnviadorDeOtp` implementando `EnviadorDeOtp` (o `auth-core` não muda)
+  - [x] Envio no `afterCommit`, igual ao `SesEnviadorDeOtp` (helper `ExecutaAposCommit` compartilhado)
+  - [x] `Idempotency-Key` = `desafioId`
+  - [x] `expira_em` = `Mensagem.expiraEm()`
+  - [x] Timeout curto (2 s, `BOOKLIT_CLIENT_GO_TIMEOUT`): falha é logada só com o `desafioId` e o status; nunca o código nem o corpo da resposta
+  - [x] URL e token validados no construtor (a subida falha, não o primeiro login)
+- [x] Propriedade `booklit.auth.email.provedor=ses|client-go` (padrão `ses`) escolhendo o bean em
+      `AuthOtpConfig`; valor desconhecido derruba a subida
+- [x] Testes: `ClientGoEnviadorDeOtpTest` (servidor HTTP do JDK: payload, cabeçalhos, 401/422/429/5xx,
+      conexão recusada, servidor lento, commit/rollback, sem código nos logs) e
+      `OtpClientGoIntegracaoTest` (Spring, Client_GO falso: emissão, verificação, login em duas etapas,
+      Client_GO recusando não quebra a requisição). Os testes do modo `ses` seguem como estavam.
+- [x] `mvnw test` no Booklit: 206 testes, 0 falhas (os 12 novos e os dos dois modos antigos); o `auth-core`
+      precisa estar instalado antes (`mvnw -f auth-core install`)
+- [x] Teste ponta a ponta local: Booklit (desktop) → túnel SSH → Client_GO + Postgres + Floci (lab).
+      `POST /auth/otp/email` → 202; notificação `enviada`, tentativa `ses/sucesso` com o `desafioId` como chave;
+      e-mail no Floci com o código; `POST /auth/otp/email/verificacao` → 200.
+      Roteiro: `scripts/subir-no-lab.sh` (subir | emails | estado | logs | parar)
+- [ ] (opcional) repetir com `booklit.auth.login.exigir-codigo=true` para exercitar o template `otp-login` pelo Client_GO
+
+**Observação de projeto:** a chamada ao Client_GO é síncrona na thread da requisição, depois do commit,
+com no máximo 2 s de espera. Com o Client_GO fora do ar o usuário recebe 202 do mesmo jeito e pede outro código.
 
 **Pronto quando:** o login com código funciona localmente nos dois modos, trocando só a propriedade.
 
@@ -177,43 +188,47 @@ cobrem os quatro cenários. (Os dois: feitos.)
 
 **Meta:** o Client_GO no ar ao lado do Booklit, recebendo o tráfego de OTP.
 
-### Renomear a fila `notifications` do Booklit
+**Estado:** código, imagem, pipeline e Terraform escritos e testados no que dá para testar sem a AWS. Nada foi
+aplicado. O passo a passo, as correções ao plano original e o plano de volta estão em `docs/producao.md`.
 
-Ela é lida pelo `VotacaoEncerradaConsumidor` e não tem nada de notificação. Se o Client_GO assinar a
-mesma fila, os dois disputam as mensagens e as votações encerradas se perdem. A ordem importa:
+### Correções ao plano original
 
-1. [ ] Criar a fila `leituras` (com DLQ) assinando o tópico `booklit-prod-events`, sem remover a antiga
-2. [ ] Deploy do Booklit com `BOOKLIT_EVENTOS_FILA_URL` apontando para `leituras`
-3. [ ] Esperar a fila `notifications` esvaziar (`ApproximateNumberOfMessages` = 0)
-4. [ ] Remover a fila `notifications` e a DLQ dela
+- O papel IAM da EC2 é compartilhado pelos dois containers: não dá para isolar o `ses:SendEmail` do Booklit sem ECS/EKS.
+- O Postgres é o **RDS** do Booklit (não existe Postgres na EC2): database e usuário `aviso` dentro dele.
+- A fila `notifications` do Booklit **não** conflita com o Client_GO (que tem tópico e filas `aviso-prod-*`). Renomear
+  virou limpeza opcional, com a ordem corrigida em `docs/producao.md`.
 
-### Infra do Client_GO
+### No Client_GO
 
-- [ ] Terraform prod: tópico, filas, DLQs, filter policies e criptografia SSE-SQS
-- [ ] Retenção curta na `email-alta` (por exemplo 15 minutos: OTP vale 10)
-- [ ] Banco do Client_GO: database separado no mesmo Postgres da EC2, com usuário próprio
-- [ ] Role do Client_GO com `ses:SendEmail`, `sns:Publish` no próprio tópico e permissões SQS nas
-      próprias filas
-- [ ] SES: identidade de domínio com DKIM e SPF, saída do sandbox e `AVISO_SES_REMETENTE` com
-      endereço do domínio verificado (sem isso o SES responde `MessageRejected`, que o Client_GO trata
-      como permanente)
-- [ ] Segredos no SSM (`AVISO_TOKEN_BOOKLIT`, URL do banco)
-- [ ] Imagem no ECR e terceiro serviço no `compose.yaml.tftpl`, com `mem_limit` de 64 MB
-- [ ] Conferir se a instância aguenta os três serviços
-- [ ] Pipeline no GitHub Actions: `go test`, build da imagem e deploy
-- [ ] Deploy: aceitar (ou tratar) que uma mensagem pode ficar até 30 s invisível quando a instância
-      antiga para, por causa do long polling cancelado (medido na fase 3). Se incomodar, comparar:
-      `visibility_timeout` menor na `email-alta`, ou terminar a chamada em andamento antes de sair
+- [x] Migrações embutidas no binário (`client-go migrar`, tabela `t_migracao`, trava consultiva, um script por
+      transação): 6 testes, incluindo instâncias em paralelo e script com erro
+- [x] `client-go sonda` (healthcheck do container, que não tem shell nem curl)
+- [x] `Dockerfile` (compila em amd64 e cruza para arm64, distroless não-root) e `.dockerignore`
+- [x] `deploy/compose.yaml` (rede do Booklit, 64 MB, `GOMEMLIMIT`) e `deploy/deploy.sh` (login ECR, SSM → `app.env`,
+      banco, migrações, healthcheck, volta para a imagem anterior se não ficar saudável)
+- [x] `.github/workflows/deploy.yml`: `go test -race` com Postgres, imagem no ECR, deploy por SSM
+- [x] `scripts/criar-banco-prod.sh` (idempotente; testado num Postgres local, incluindo as migrações com o usuário limitado)
+- [x] Terraform `infra/envs/prod`: tópico, filas e DLQs (SSE-SQS, `email-alta` com retenção de 15 min), ECR, parâmetros do
+      SSM, política `client-go-prod` no papel da EC2, papel OIDC do GitHub, chave da virada `BOOKLIT_EMAIL_PROVEDOR`
+- [ ] `scripts/validar-terraform.sh` no lab (primeiro `validate` real do Terraform de produção)
+
+### Na AWS (feito por você, na ordem de `docs/producao.md`)
+
+- [ ] `terraform plan` lido (só criações + uma política no papel existente) e `apply`
+- [ ] Variáveis do repositório no GitHub
+- [ ] Primeiro deploy do Client_GO e teste de 202 + e-mail + `enviada` por um endereço do sandbox
+- [ ] SES: domínio `Verified` e acesso de produção (sem isso só os endereços de `emails_teste_sandbox` recebem)
+- [ ] `free -m` / `docker stats` depois do primeiro deploy (a t4g.micro divide 1 GB entre três serviços)
 
 ### Virada
 
-- [ ] Deploy com `booklit.email.provedor=ses` (nada muda para o usuário)
-- [ ] Trocar para `aviso` e acompanhar os primeiros logins
-- [ ] Plano de volta: trocar a propriedade para `ses`
-- [ ] Depois de uma semana estável, remover a `ses:SendEmail` da role do Booklit e apagar o
-      `SesEnviadorDeOtp`
+- [ ] Booklit da Fase 4 em produção com `BOOKLIT_EMAIL_PROVEDOR=ses` (nada muda para o usuário)
+- [ ] `aws ssm put-parameter ... --value client-go --overwrite` + deploy do Booklit; acompanhar os primeiros logins
+- [ ] Plano de volta: o mesmo comando com `ses` e um deploy
+- [ ] Depois de uma semana estável, remover o `SesEnviadorDeOtp` e o `SesV2Client` do Booklit
 
-**Pronto quando:** os logins em produção passam pelo Client_GO e a role do Booklit não envia mais e-mail.
+**Pronto quando:** os logins em produção passam pelo Client_GO, com histórico e retentativa, e o Booklit não tem mais código de
+envio de e-mail. (A permissão `ses:SendEmail` continua no papel compartilhado.)
 
 ---
 

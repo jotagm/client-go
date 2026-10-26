@@ -51,10 +51,15 @@ internal/porta/         portas: Repositorio, Publicador, Consumidor, Entregador,
 internal/aplicacao/     casos de uso: aceitar, buscar, processar mensagem, laço de consumo, backoff
 internal/api/           HTTP e autenticação por origem
 internal/adapter/       postgres, sns, sqs, ses e memoria (para teste e para rodar sem AWS)
-infra/                  Terraform: módulo de mensageria e ambiente do Floci
-db/                     scripts SQL
-docs/                   ADRs e plano de implementação
+internal/migracao/      migrações: aplica db/*.sql uma vez cada (client-go migrar)
+infra/                  Terraform: módulo de mensageria, ambiente do Floci e produção
+db/                     scripts SQL (embutidos no binário)
+deploy/                 compose e deploy.sh que rodam na EC2
+docs/                   ADRs, plano de implementação e roteiro de produção
 ```
+
+Subcomandos do binário: `client-go` (ou `servir`) sobe a API e os consumidores, `client-go migrar` aplica as
+migrações e sai, `client-go sonda` é o healthcheck do container. Produção: [`docs/producao.md`](docs/producao.md).
 
 ## Rodando
 
@@ -187,5 +192,5 @@ Plano completo em [`docs/plano-de-implementacao.md`](docs/plano-de-implementacao
 1. ~~`POST /notificacoes` com idempotência e o adapter Postgres.~~ ✅
 2. ~~Publicador SNS e consumidor SQS + versões em memória.~~ ✅
 3. ~~Entrega de verdade: templates com `missingkey=error`, provedor SES, histórico de tentativas.~~ ✅
-4. Integração com o Booklit.
-5. Produção, recibos, reconciliação e painel.
+4. ~~Integração com o Booklit.~~ ✅
+5. Produção (imagem, pipeline e Terraform escritos; falta aplicar na AWS, ver `docs/producao.md`), depois recibos, reconciliação e painel.
