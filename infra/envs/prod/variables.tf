@@ -31,6 +31,17 @@ variable "github_repo" {
   default     = "jotagm/client-go"
 }
 
+variable "github_sub_imutavel" {
+  description = <<-EOT
+    Valor do campo "sub" do token OIDC no formato com IDs imutáveis, que o GitHub usa em repositórios
+    criados depois de 15/07/2026: repo:<dono>@<id_do_dono>/<repo>@<id_do_repo>:ref:refs/heads/main.
+    Vazio = só o formato antigo (repo:<dono>/<repo>:ref:refs/heads/main). Preenchido, a regra do papel
+    aceita os dois, sempre só deste repositório.
+  EOT
+  type        = string
+  default     = ""
+}
+
 variable "dominio_email" {
   description = "Domínio já verificado no SES pelo Terraform do Booklit (email.tf)"
   type        = string

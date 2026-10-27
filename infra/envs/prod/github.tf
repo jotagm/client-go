@@ -5,6 +5,15 @@ data "aws_iam_openid_connect_provider" "github" {
   url = "https://token.actions.githubusercontent.com"
 }
 
+locals {
+  # O GitHub manda o formato antigo (só nomes) em repositórios antigos e o imutável (nomes + IDs)
+  # nos criados depois de 15/07/2026. Uma lista no StringEquals é um OU: qualquer um dos dois.
+  github_subs = compact([
+    "repo:${var.github_repo}:ref:refs/heads/main",
+    var.github_sub_imutavel,
+  ])
+}
+
 resource "aws_iam_role" "github_deploy" {
   name = "client-go-prod-github-deploy"
   assume_role_policy = jsonencode({
@@ -17,7 +26,7 @@ resource "aws_iam_role" "github_deploy" {
         StringEquals = {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
           # Só a main deste repositório: PR, fork ou outra branch não assumem o papel.
-          "token.actions.githubusercontent.com:sub" = "repo:${var.github_repo}:ref:refs/heads/main"
+          "token.actions.githubusercontent.com:sub" = local.github_subs
         }
       }
     }]
