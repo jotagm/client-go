@@ -90,6 +90,11 @@ arm64, envia ao ECR e dispara `/opt/client-go/deploy.sh` na EC2 por SSM. O scrip
 aplica as migrações (`client-go migrar`), sobe o container e espera o healthcheck; se não ficar saudável em
 2 minutos, volta a imagem anterior.
 
+Se o job `imagem` falhar com `Not authorized to perform sts:AssumeRoleWithWebIdentity`, o GitHub provavelmente está
+mandando o `sub` do token no formato com IDs imutáveis (`repo:<dono>@<id>/<repo>@<id>:ref:...`), que vale para repositórios
+criados depois de 15/07/2026. Pegue os IDs (`gh api repos/<dono>/<repo> --jq '.id, .owner.id'`), ponha em
+`terraform.tfvars` o `github_sub_imutavel` (ver `variables.tf`) e rode `terraform apply`: a regra do papel passa a aceitar os dois formatos.
+
 Se o deploy falhar com "Rede booklit_default não existe", o Booklit ainda não foi deployado nesta instância.
 
 ### 4. Conferir sem tráfego real
@@ -145,6 +150,34 @@ que gravaria o código em claro). Por isso o primeiro dia merece olhar para os l
 Remover o `SesEnviadorDeOtp` do Booklit, o provedor `ses` do `AuthOtpConfig` e o `SesV2Client`. A permissão
 `ses:SendEmail` do Booklit pode sair do Terraform dele, mas lembre da ressalva 1 acima: o papel é compartilhado
 e o do Client_GO a mantém.
+
+## Trocar o SES pela Resend
+
+O Client_GO escolhe o provedor por `AVISO_PROVEDOR` (`ses` ou `resend`); o Booklit não muda, ele só fala com o
+Client_GO. A Resend não tem sandbox por destinatário: depois do domínio verificado, entrega para qualquer endereço.
+O plano gratuito cobre 100 e-mails por dia (3.000 por mês) e um domínio.
+
+1. **Conta e domínio.** Em resend.com, crie a conta, *Domains → Add Domain* com `booklit.bio` (região
+   `us-east-1`) e cadastre no DNS os registros que ela mostrar (DKIM e SPF/MAIL FROM em `send.booklit.bio`; eles
+   convivem com os do SES). Espere o domínio ficar *Verified*.
+2. **Criar o lugar da chave.** No `terraform.tfvars` ainda com `provedor_email = "ses"` (ou sem a linha), rode
+   `terraform plan` e `apply`: ele cria o parâmetro `/client-go/prod/AVISO_RESEND_CHAVE` com um texto de
+   preenchimento e o `AVISO_RESEND_REMETENTE`. Faça isto antes do passo seguinte, senão o `apply` esbarra num
+   parâmetro que já existe.
+3. **Chave da API.** *API Keys → Create*, permissão *Sending access*, restrita ao domínio. Guarde no SSM (a chave não
+   passa pelo Terraform nem pelo git; use aspas simples):
+   ```bash
+   aws ssm put-parameter --name /client-go/prod/AVISO_RESEND_CHAVE --type SecureString --overwrite \
+     --value 're_...' --region us-east-1
+   ```
+4. **Ligar.** No `terraform.tfvars`, `provedor_email = "resend"`; `terraform plan` (esperado: 1 parâmetro mudando,
+   `AVISO_PROVEDOR`) e `apply`. Depois, *Re-run all jobs* do workflow: o `deploy.sh` relê o SSM, e o log do container
+   passa a dizer `entrega pela Resend`. (O código com o adaptador precisa estar na `main`: commit e push antes.)
+5. **Testar** com o mesmo POST do passo 4 e o `select` de tentativas: esperado `enviada | | resend | sucesso | <ms>`.
+6. **Voltar** é `provedor_email = "ses"`, `apply` e outro deploy do Client_GO.
+
+Falhas: 4xx (payload, domínio ou chave) são permanentes; 429 (taxa ou cota), 5xx e rede são temporárias e voltam à
+fila com backoff. A cota diária estourada (429) vira temporária e esgota as tentativas: acompanhe a DLQ.
 
 ## Operação
 

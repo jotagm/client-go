@@ -210,7 +210,7 @@ aplicado. O passo a passo, as correções ao plano original e o plano de volta e
 - [x] `scripts/criar-banco-prod.sh` (idempotente; testado num Postgres local, incluindo as migrações com o usuário limitado)
 - [x] Terraform `infra/envs/prod`: tópico, filas e DLQs (SSE-SQS, `email-alta` com retenção de 15 min), ECR, parâmetros do
       SSM, política `client-go-prod` no papel da EC2, papel OIDC do GitHub, chave da virada `BOOKLIT_EMAIL_PROVEDOR`
-- [ ] `scripts/validar-terraform.sh` no lab (primeiro `validate` real do Terraform de produção)
+- [x] `scripts/validar-terraform.sh` no lab: `fmt` sem diferenças e `validate` ok em `prod` e `floci` (providers reais, Terraform 1.9)
 
 ### Na AWS (feito por você, na ordem de `docs/producao.md`)
 
@@ -260,7 +260,8 @@ envio de e-mail. (A permissão `ses:SendEmail` continua no papel compartilhado.)
 
 ## Fase 8: Evolução
 
-- [ ] Resend como segundo provedor de e-mail, com failover quando o SES devolve erro temporário
+- [x] Resend como provedor de e-mail (`AVISO_PROVEDOR=resend`, adaptador `internal/adapter/resend`, chave no SSM); ligar: ver `docs/producao.md`
+- [ ] Failover automático SES ↔ Resend quando um devolve erro temporário
 - [ ] Webhook da Resend com verificação de assinatura
 - [ ] Fila própria do Client_GO assinando `booklit-prod-events`: `votacao.encerrada` vira e-mail para
       os membros do clube

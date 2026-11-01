@@ -30,7 +30,19 @@ umask 077
 aws ssm get-parameters-by-path --region "$REGIAO" --path "$PREFIXO" --recursive --with-decryption \
   --query 'Parameters[].[Name,Value]' --output text \
   | awk -F'\t' -v prefixo="$PREFIXO/" '{ sub("^" prefixo, "", $1); print $1 "=" $2 }' > app.env.novo
-for obrigatoria in AVISO_DB_URL AVISO_TOKENS AVISO_TOPICO_ARN AVISO_FILAS AVISO_SES_REMETENTE; do
+PROVEDOR="$(grep '^AVISO_PROVEDOR=' app.env.novo | cut -d= -f2- | tr '[:upper:]' '[:lower:]')"
+OBRIGATORIAS="AVISO_DB_URL AVISO_TOKENS AVISO_TOPICO_ARN AVISO_FILAS"
+case "$PROVEDOR" in
+  resend) OBRIGATORIAS="$OBRIGATORIAS AVISO_RESEND_CHAVE AVISO_RESEND_REMETENTE" ;;
+  *)      OBRIGATORIAS="$OBRIGATORIAS AVISO_SES_REMETENTE" ;;
+esac
+# Chave que ainda é o texto de preenchimento do Terraform não vale.
+if [ "$PROVEDOR" = resend ] && grep -q '^AVISO_RESEND_CHAVE=preencher' app.env.novo; then
+  echo "AVISO_RESEND_CHAVE ainda não foi preenchida em $PREFIXO (aws ssm put-parameter --overwrite)" >&2
+  rm -f app.env.novo
+  exit 1
+fi
+for obrigatoria in $OBRIGATORIAS; do
   if ! grep -q "^${obrigatoria}=." app.env.novo; then
     echo "Configuração incompleta em $PREFIXO (falta $obrigatoria); abortando" >&2
     rm -f app.env.novo

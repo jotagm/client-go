@@ -23,13 +23,14 @@ resource "random_password" "token_booklit" {
 
 resource "aws_ssm_parameter" "configuracao" {
   for_each = {
-    AWS_REGION          = var.regiao
-    AVISO_ENDERECO      = ":8081"
-    AVISO_PROVEDOR      = "ses"
-    AVISO_SES_REMETENTE = var.remetente
-    AVISO_TOPICO_ARN    = module.mensageria.topico_arn
-    AVISO_FILAS         = module.mensageria.aviso_filas
-    AVISO_WORKERS       = tostring(var.workers)
+    AWS_REGION             = var.regiao
+    AVISO_ENDERECO         = ":8081"
+    AVISO_PROVEDOR         = var.provedor_email
+    AVISO_SES_REMETENTE    = var.remetente
+    AVISO_RESEND_REMETENTE = var.remetente
+    AVISO_TOPICO_ARN       = module.mensageria.topico_arn
+    AVISO_FILAS            = module.mensageria.aviso_filas
+    AVISO_WORKERS          = tostring(var.workers)
   }
 
   name  = "${local.prefixo_ssm}/${each.key}"
@@ -49,6 +50,18 @@ resource "aws_ssm_parameter" "segredo" {
     AVISO_DB_URL = "postgres://aviso:${random_password.banco.result}@${var.rds_endpoint}:5432/aviso?sslmode=require"
     AVISO_TOKENS = "booklit=${random_password.token_booklit.result}"
   }[each.key]
+}
+
+# Chave da API da Resend. O Terraform só cria o lugar: o valor real é posto à mão
+# (`aws ssm put-parameter --overwrite`) para a chave nunca entrar no código nem no estado.
+resource "aws_ssm_parameter" "resend_chave" {
+  name  = "${local.prefixo_ssm}/AVISO_RESEND_CHAVE"
+  type  = "SecureString"
+  value = "preencher-com-aws-ssm-put-parameter"
+
+  lifecycle {
+    ignore_changes = [value]
+  }
 }
 
 # --- Lado do Booklit ---------------------------------------------------------------------------

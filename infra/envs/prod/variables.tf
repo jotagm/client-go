@@ -42,6 +42,17 @@ variable "github_sub_imutavel" {
   default     = ""
 }
 
+variable "provedor_email" {
+  description = "Provedor de e-mail do Client_GO: ses ou resend. Trocar exige um novo deploy (re-run do workflow) para o container ler o valor."
+  type        = string
+  default     = "ses"
+
+  validation {
+    condition     = contains(["ses", "resend"], var.provedor_email)
+    error_message = "provedor_email deve ser ses ou resend."
+  }
+}
+
 variable "dominio_email" {
   description = "Domínio já verificado no SES pelo Terraform do Booklit (email.tf)"
   type        = string

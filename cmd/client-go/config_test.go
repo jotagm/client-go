@@ -11,7 +11,7 @@ func ambiente(t *testing.T, extra map[string]string) {
 		"AVISO_DB_URL": "postgres://aviso:aviso@localhost:5433/aviso",
 		"AVISO_TOKENS": "booklit=booklit-token-de-teste-com-32-caracteres!",
 	}
-	for _, k := range []string{"AVISO_PROVEDOR", "AVISO_SES_REMETENTE", "AVISO_SES_CONJUNTO", "AVISO_FILAS", "AVISO_TOPICO_ARN", "AVISO_WORKERS", "AVISO_ENDERECO"} {
+	for _, k := range []string{"AVISO_PROVEDOR", "AVISO_SES_REMETENTE", "AVISO_SES_CONJUNTO", "AVISO_RESEND_CHAVE", "AVISO_RESEND_REMETENTE", "AVISO_RESEND_URL", "AVISO_FILAS", "AVISO_TOPICO_ARN", "AVISO_WORKERS", "AVISO_ENDERECO"} {
 		t.Setenv(k, "")
 	}
 	for k, v := range base {
@@ -51,7 +51,10 @@ func TestConfigRecusa(t *testing.T) {
 	}{
 		{"ses sem remetente", map[string]string{"AVISO_PROVEDOR": "ses"}, "AVISO_SES_REMETENTE"},
 		{"remetente com quebra de linha", map[string]string{"AVISO_PROVEDOR": "ses", "AVISO_SES_REMETENTE": "a@b.com\nBcc: c@d.com"}, "quebra de linha"},
-		{"provedor desconhecido", map[string]string{"AVISO_PROVEDOR": "resend"}, "desconhecido"},
+		{"provedor desconhecido", map[string]string{"AVISO_PROVEDOR": "mailgun"}, "desconhecido"},
+		{"resend sem chave", map[string]string{"AVISO_PROVEDOR": "resend", "AVISO_RESEND_REMETENTE": "a@b.com"}, "AVISO_RESEND_CHAVE"},
+		{"resend sem remetente", map[string]string{"AVISO_PROVEDOR": "resend", "AVISO_RESEND_CHAVE": "re_x"}, "AVISO_RESEND_REMETENTE"},
+		{"resend com remetente quebrado", map[string]string{"AVISO_PROVEDOR": "resend", "AVISO_RESEND_CHAVE": "re_x", "AVISO_RESEND_REMETENTE": "a@b.com\nBcc: c@d.com"}, "quebra de linha"},
 	}
 	for _, tc := range casos {
 		t.Run(tc.nome, func(t *testing.T) {
@@ -61,5 +64,13 @@ func TestConfigRecusa(t *testing.T) {
 				t.Fatalf("err = %v, queria algo com %q", err, tc.quero)
 			}
 		})
+	}
+}
+
+func TestConfigResendCompleta(t *testing.T) {
+	ambiente(t, map[string]string{"AVISO_PROVEDOR": "Resend", "AVISO_RESEND_CHAVE": " re_x ", "AVISO_RESEND_REMETENTE": " Booklit <no-reply@booklit.bio> "})
+	cfg, err := lerConfig()
+	if err != nil || cfg.provedor != provedorResend || cfg.resendChave != "re_x" || cfg.resendRemetente != "Booklit <no-reply@booklit.bio>" {
+		t.Fatalf("cfg=%+v err=%v", cfg, err)
 	}
 }

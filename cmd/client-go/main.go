@@ -39,6 +39,7 @@ import (
 	"github.com/jotagm/client-go/db"
 	"github.com/jotagm/client-go/internal/adapter/memoria"
 	"github.com/jotagm/client-go/internal/adapter/postgres"
+	"github.com/jotagm/client-go/internal/adapter/resend"
 	"github.com/jotagm/client-go/internal/adapter/ses"
 	"github.com/jotagm/client-go/internal/adapter/sns"
 	"github.com/jotagm/client-go/internal/adapter/sqs"
@@ -159,10 +160,17 @@ func rodar(log *slog.Logger) error {
 		sesProvedor := ses.Novo(ses.NovoCliente(awsCfg), cfg.sesRemetente, cfg.sesConjunto, 0)
 		entregador = aplicacao.NovoEntregadorEmail(repo, repo, sesProvedor, log)
 		log.Info("entrega pelo SES", "remetente", cfg.sesRemetente, "configuration_set", cfg.sesConjunto)
+	case provedorResend:
+		rp, err := resend.Novo(cfg.resendChave, cfg.resendRemetente, cfg.resendURL, 0)
+		if err != nil {
+			return err
+		}
+		entregador = aplicacao.NovoEntregadorEmail(repo, repo, rp, log)
+		log.Info("entrega pela Resend", "remetente", cfg.resendRemetente)
 	default:
 		entregador = memoria.EntregaSimulada{Log: log}
 		if len(cfg.filas) > 0 {
-			log.Warn("entrega simulada: as notificações viram 'enviada' sem e-mail de verdade (AVISO_PROVEDOR=ses liga o SES)")
+			log.Warn("entrega simulada: as notificações viram 'enviada' sem e-mail de verdade (AVISO_PROVEDOR=ses ou resend liga a entrega de verdade)")
 		}
 	}
 
@@ -225,14 +233,19 @@ type config struct {
 	filas    []fila
 	workers  int
 
-	provedor     string // "simulado" (padrão) ou "ses"
+	provedor     string // "simulado" (padrão), "ses" ou "resend"
 	sesRemetente string
 	sesConjunto  string
+
+	resendChave     string
+	resendRemetente string
+	resendURL       string // só para teste; vazio usa a API da Resend
 }
 
 const (
 	provedorSimulado = "simulado"
 	provedorSES      = "ses"
+	provedorResend   = "resend"
 )
 
 func lerConfig() (config, error) {
@@ -244,6 +257,10 @@ func lerConfig() (config, error) {
 		provedor:     strings.ToLower(envOu("AVISO_PROVEDOR", provedorSimulado)),
 		sesRemetente: strings.TrimSpace(os.Getenv("AVISO_SES_REMETENTE")),
 		sesConjunto:  strings.TrimSpace(os.Getenv("AVISO_SES_CONJUNTO")),
+
+		resendChave:     strings.TrimSpace(os.Getenv("AVISO_RESEND_CHAVE")),
+		resendRemetente: strings.TrimSpace(os.Getenv("AVISO_RESEND_REMETENTE")),
+		resendURL:       strings.TrimSpace(os.Getenv("AVISO_RESEND_URL")),
 	}
 	if cfg.dbURL == "" {
 		return cfg, errors.New("AVISO_DB_URL não definida")
@@ -264,8 +281,18 @@ func lerConfig() (config, error) {
 		if strings.ContainsAny(cfg.sesRemetente, "\r\n") {
 			return cfg, errors.New("AVISO_SES_REMETENTE não pode ter quebra de linha")
 		}
+	case provedorResend:
+		if cfg.resendChave == "" {
+			return cfg, errors.New("AVISO_PROVEDOR=resend precisa de AVISO_RESEND_CHAVE")
+		}
+		if cfg.resendRemetente == "" {
+			return cfg, errors.New("AVISO_PROVEDOR=resend precisa de AVISO_RESEND_REMETENTE (ex.: Booklit <no-reply@booklit.bio>)")
+		}
+		if strings.ContainsAny(cfg.resendRemetente, "\r\n") {
+			return cfg, errors.New("AVISO_RESEND_REMETENTE não pode ter quebra de linha")
+		}
 	default:
-		return cfg, fmt.Errorf("AVISO_PROVEDOR %q desconhecido: use %s ou %s", cfg.provedor, provedorSimulado, provedorSES)
+		return cfg, fmt.Errorf("AVISO_PROVEDOR %q desconhecido: use %s, %s ou %s", cfg.provedor, provedorSimulado, provedorSES, provedorResend)
 	}
 	cfg.workers, err = strconv.Atoi(envOu("AVISO_WORKERS", "4"))
 	if err != nil || cfg.workers < 1 || cfg.workers > 64 {
