@@ -6,10 +6,6 @@ aconteceu com cada envio.
 
 Primeiro cliente: o código de login e verificação de e-mail do [Booklit](https://github.com/jotagm/booklit-server).
 
-> O projeto começou com o nome **Aviso**. Ficaram com esse nome, de propósito, as variáveis de
-> ambiente `AVISO_*`, o prefixo `aviso-` do tópico e das filas na AWS e o banco/usuário `aviso` do
-> Postgres: trocar esses nomes recriaria a infraestrutura e quebraria configurações já montadas.
-
 ## Fluxo
 
 ```
