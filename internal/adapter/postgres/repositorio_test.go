@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -100,6 +101,40 @@ func TestTemplatesDoSeed(t *testing.T) {
 	}
 	if _, err := repo.BuscarTemplate(ctx, "otp-login", 99); !errors.Is(err, porta.ErrNaoEncontrado) {
 		t.Errorf("versão inexistente: %v", err)
+	}
+}
+
+func TestTemplateConviteClube(t *testing.T) {
+	repo := novoRepo(t)
+
+	tpl, err := repo.BuscarTemplate(context.Background(), "convite-clube", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tpl.Canal != notificacao.CanalEmail {
+		t.Fatalf("canal = %q", tpl.Canal)
+	}
+	faltando, sobrando := tpl.ConferirVariaveis(map[string]string{
+		"convidado_por": "Ana", "clube": "Leitores de Sábado", "link": "https://booklit.bio/clubes",
+	})
+	if len(faltando) != 0 || len(sobrando) != 0 {
+		t.Fatalf("variáveis: faltando=%v sobrando=%v", faltando, sobrando)
+	}
+
+	// Sem expira_em: o convite não tem a validade curta do código.
+	r, err := tpl.Renderizar(map[string]string{
+		"convidado_por": "Ana", "clube": "Leitores de Sábado", "link": "https://booklit.bio/clubes",
+	}, nil, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, trecho := range []string{"Ana convidou você", `"Leitores de Sábado"`, "https://booklit.bio/clubes"} {
+		if !strings.Contains(r.Corpo, trecho) {
+			t.Errorf("corpo sem %q:\n%s", trecho, r.Corpo)
+		}
+	}
+	if strings.Contains(r.Assunto, "Ana") || strings.Contains(r.Assunto, "Leitores") {
+		t.Errorf("o assunto não pode levar texto do usuário: %q", r.Assunto)
 	}
 }
 

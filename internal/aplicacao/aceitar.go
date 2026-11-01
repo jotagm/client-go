@@ -92,7 +92,8 @@ func (s *Servico) Aceitar(ctx context.Context, p Pedido) (notificacao.Notificaca
 		return notificacao.Notificacao{}, false, fmt.Errorf("buscar template: %w", err)
 	}
 
-	if err := validarParaTemplate(p, tpl); err != nil {
+	tipo := notificacao.TipoDe(tpl.Nome)
+	if err := validarParaTemplate(p, tpl, tipo); err != nil {
 		return notificacao.Notificacao{}, false, err
 	}
 	if err := ensaiarRenderizacao(p, tpl, agora); err != nil {
@@ -101,7 +102,7 @@ func (s *Servico) Aceitar(ctx context.Context, p Pedido) (notificacao.Notificaca
 
 	prioridade := p.Prioridade
 	if prioridade == "" {
-		prioridade = notificacao.PrioridadeNormal
+		prioridade = tipo.PrioridadePadrao()
 	}
 
 	n := notificacao.Notificacao{
@@ -223,8 +224,14 @@ func validar(p Pedido, agora time.Time) error {
 	return nil
 }
 
-func validarParaTemplate(p Pedido, tpl notificacao.Template) error {
+func validarParaTemplate(p Pedido, tpl notificacao.Template, tipo notificacao.Tipo) error {
 	campos := map[string]string{}
+	if tipo.ExigeExpiracao() && p.ExpiraEm == nil {
+		campos["expira_em"] = "obrigatório: este tipo de aviso vale por tempo limitado (expira_em)"
+	}
+	for campo, motivo := range tipo.Validar(p.Variaveis) {
+		campos[campo] = motivo
+	}
 	faltando, sobrando := tpl.ConferirVariaveis(p.Variaveis)
 	if len(faltando) > 0 {
 		campos["variaveis"] = "faltando: " + strings.Join(faltando, ", ")
