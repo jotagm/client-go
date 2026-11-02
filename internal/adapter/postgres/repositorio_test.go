@@ -455,3 +455,32 @@ func TestTentativaRapidaGuardaLatenciaDeAoMenos1ms(t *testing.T) {
 		t.Errorf("latencia_ms NULL = %v; queria [false true]", nulos)
 	}
 }
+
+func TestTemplateLembreteVotacao(t *testing.T) {
+	repo := novoRepo(t)
+
+	tpl, err := repo.BuscarTemplate(context.Background(), "lembrete-votacao", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	variaveis := map[string]string{
+		"clube": "Leitoras de Domingo", "prazo": "quarta-feira, 5 de novembro, às 20:00",
+		"link": "https://booklit.bio/votacoes/42",
+	}
+	faltando, sobrando := tpl.ConferirVariaveis(variaveis)
+	if len(faltando) != 0 || len(sobrando) != 0 {
+		t.Fatalf("variáveis: faltando=%v sobrando=%v", faltando, sobrando)
+	}
+	r, err := tpl.Renderizar(variaveis, nil, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, trecho := range []string{`"Leitoras de Domingo"`, "fecha quarta-feira, 5 de novembro, às 20:00", "https://booklit.bio/votacoes/42"} {
+		if !strings.Contains(r.Corpo, trecho) {
+			t.Errorf("corpo sem %q:\n%s", trecho, r.Corpo)
+		}
+	}
+	if strings.Contains(r.Assunto, "Leitoras") {
+		t.Errorf("o assunto não pode levar texto do usuário: %q", r.Assunto)
+	}
+}
