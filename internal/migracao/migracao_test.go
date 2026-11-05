@@ -73,9 +73,10 @@ func TestAplicaOsScriptsReaisDoProjetoEMarcaTodos(t *testing.T) {
 	if len(aplicadas) < 3 || aplicadas[0] != "001_inicial.sql" {
 		t.Fatalf("scripts aplicados fora de ordem ou faltando: %v", aplicadas)
 	}
-	// Os três templates do OTP vêm do 002; a tabela de tentativas, do 001.
-	if n := contar(t, pool, `SELECT count(*) FROM t_template WHERE nome LIKE 'otp-%'`); n != 3 {
-		t.Fatalf("templates do OTP = %d, esperava 3", n)
+	// Três templates do OTP vêm do 002 e o do "esqueci minha senha", do 006; a tabela de
+	// tentativas, do 001.
+	if n := contar(t, pool, `SELECT count(*) FROM t_template WHERE nome LIKE 'otp-%'`); n != 4 {
+		t.Fatalf("templates do OTP = %d, esperava 4", n)
 	}
 	if n := contar(t, pool, `SELECT count(*) FROM t_migracao`); n != len(aplicadas) {
 		t.Fatalf("t_migracao tem %d linhas, esperava %d", n, len(aplicadas))
