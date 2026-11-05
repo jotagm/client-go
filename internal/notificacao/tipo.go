@@ -35,6 +35,7 @@ var tipos = map[string]Tipo{
 	"otp-login":           CodigoPorEmail{},
 	"otp-verificar-email": CodigoPorEmail{},
 	"otp-redefinir-pin":   CodigoPorEmail{},
+	"otp-redefinir-senha": CodigoPorEmail{},
 	"convite-clube":       ConviteDeClube{},
 	"lembrete-votacao":    LembreteDeVotacao{},
 }

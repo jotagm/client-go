@@ -7,6 +7,7 @@ func TestTipoDeEscolhePeloNomeDoTemplate(t *testing.T) {
 		"otp-login":           "codigo-por-email",
 		"otp-verificar-email": "codigo-por-email",
 		"otp-redefinir-pin":   "codigo-por-email",
+		"otp-redefinir-senha": "codigo-por-email",
 		"convite-clube":       "convite-clube",
 		"lembrete-votacao":    "lembrete-votacao",
 		"qualquer-outro":      "generico",

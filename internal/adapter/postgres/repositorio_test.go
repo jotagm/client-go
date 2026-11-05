@@ -90,7 +90,7 @@ func TestTemplatesDoSeed(t *testing.T) {
 	repo := novoRepo(t)
 	ctx := context.Background()
 
-	for _, nome := range []string{"otp-login", "otp-verificar-email", "otp-redefinir-pin"} {
+	for _, nome := range []string{"otp-login", "otp-verificar-email", "otp-redefinir-pin", "otp-redefinir-senha"} {
 		tpl, err := repo.BuscarTemplate(ctx, nome, 0)
 		if err != nil {
 			t.Fatalf("%s: %v", nome, err)
